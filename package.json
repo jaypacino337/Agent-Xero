@@ -1,0 +1,23 @@
+{
+  "name": "agent-xero",
+  "version": "0.1.0",
+  "description": "Agent Xero — autonomous Solana memecoin trading agent powered by Claude Fable 5. Trades from a treasury funded by pump.fun creator fees; profits buy back and burn $XERO.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "sim": "tsx src/tools/e2e-sim.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.117.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

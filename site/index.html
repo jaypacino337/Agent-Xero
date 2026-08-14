@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AGENT XERO</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --surface: #14171c;
+    --surface-2: #1b1f26;
+    --border: #262b33;
+    --ink: #e8eaed;
+    --ink-2: #9aa3ad;
+    --ink-3: #626b76;
+    --accent: #ff6b35;      /* burn */
+    --good: #4ade80;
+    --bad: #f87171;
+    --mono: "SF Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 32px 20px 80px;
+    max-width: 1060px;
+    margin: 0 auto;
+  }
+  header { margin-bottom: 36px; }
+  .brand { font-size: 28px; letter-spacing: 0.18em; font-weight: 700; }
+  .brand .x { color: var(--accent); }
+  .tagline { color: var(--ink-2); margin-top: 6px; max-width: 640px; }
+  .modebar { display: flex; gap: 10px; margin-top: 14px; align-items: center; flex-wrap: wrap; }
+  .pill {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 12px;
+    font-size: 12px;
+    color: var(--ink-2);
+    background: var(--surface);
+  }
+  .pill.live { border-color: var(--good); color: var(--good); }
+  .pill.paper { border-color: var(--accent); color: var(--accent); }
+
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 40px;
+  }
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--ink-3); }
+  .tile .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
+  .tile .sub { font-size: 12px; color: var(--ink-2); margin-top: 4px; }
+  .tile.burn .value { color: var(--accent); }
+
+  h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--ink-2);
+    margin: 40px 0 12px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+  }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left;
+    color: var(--ink-3);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 8px 12px;
+  }
+  td { padding: 8px 12px; border-top: 1px solid var(--border); white-space: nowrap; }
+  tr:hover td { background: var(--surface-2); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  th.num { text-align: right; }
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+  .muted { color: var(--ink-3); }
+  .sym { font-weight: 700; }
+  .empty { color: var(--ink-3); padding: 24px 12px; text-align: center; }
+
+  .how {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    color: var(--ink-2);
+    margin-top: 8px;
+  }
+  .how b { color: var(--ink); }
+  .how ol { margin: 10px 0 0 18px; display: grid; gap: 6px; }
+  footer { margin-top: 48px; color: var(--ink-3); font-size: 12px; }
+  a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">AGENT <span class="x">XERO</span></div>
+  <div class="tagline">autonomous on-chain trading agent powered by Claude Fable&nbsp;5.
+    high-conviction entries only — smart-wallet confluence, volume thresholds, pump.fun scanning.
+    profits buy back and burn $XERO. everything below is the live ledger.</div>
+  <div class="modebar">
+    <span id="mode" class="pill">loading…</span>
+    <span id="halted" class="pill" hidden>trading halted</span>
+    <span id="sol" class="pill">SOL —</span>
+  </div>
+</header>
+
+<section class="tiles" id="tiles">
+  <div class="tile"><div class="label">Treasury (trading)</div><div class="value" id="t-treasury">—</div><div class="sub" id="t-pending">—</div></div>
+  <div class="tile burn"><div class="label">$XERO burned 🔥</div><div class="value" id="t-burned">—</div><div class="sub" id="t-buyback">—</div></div>
+  <div class="tile"><div class="label">Trading profit (lifetime)</div><div class="value" id="t-profit">—</div><div class="sub" id="t-winrate">—</div></div>
+  <div class="tile"><div class="label">Creator fees collected</div><div class="value" id="t-fees">—</div><div class="sub" id="t-callout">—</div></div>
+</section>
+
+<h2>Open positions</h2>
+<div class="scroll"><table id="positions">
+  <thead><tr><th>Token</th><th class="num">Entry MC</th><th class="num">Peak MC</th><th class="num">SOL in</th><th>Signals</th><th class="num">Score</th><th>Opened</th></tr></thead>
+  <tbody></tbody>
+</table></div>
+
+<h2>Trade log</h2>
+<div class="scroll"><table id="trades">
+  <thead><tr><th>Time</th><th>Side</th><th>Token</th><th class="num">SOL</th><th class="num">MC</th><th>Reason</th><th>Tx</th></tr></thead>
+  <tbody></tbody>
+</table></div>
+
+<h2>Buyback &amp; burn ledger</h2>
+<div class="scroll"><table id="burns">
+  <thead><tr><th>Time</th><th class="num">SOL spent</th><th class="num">$XERO burned</th><th>Funded by</th><th>Tx</th></tr></thead>
+  <tbody></tbody>
+</table></div>
+
+<h2>Callouts</h2>
+<div class="scroll"><table id="callouts">
+  <thead><tr><th>Time</th><th>Token</th><th class="num">Called at MC</th><th class="num">Peak MC</th><th class="num">Peak multiple</th><th>Status</th></tr></thead>
+  <tbody></tbody>
+</table></div>
+
+<h2>How the flywheel works</h2>
+<div class="how">
+  <b>treasury → trades → profits → buyback → burn.</b>
+  <ol>
+    <li>pump.fun <b>creator fees</b> fund the trading treasury.</li>
+    <li>Xero takes <b>high-quality entries only</b>: tracked profitable wallets buying in confluence, buy-volume thresholds, early pump.fun momentum, and calls ingested from telegram — scored together; sub-$10k entries hunting $100k+ runners.</li>
+    <li><b>trading profits</b> and <b>callout revenue</b> buy back $XERO on-market.</li>
+    <li>bought-back $XERO is <b>burned</b>. totals above; every event in the ledger.</li>
+  </ol>
+</div>
+
+<footer>
+  agent xero is an experiment in autonomous trading. nothing here is financial advice.
+  paper-mode entries are simulated against live prices and marked accordingly.
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const usd = (n) => n == null ? "—" : "$" + Math.round(n).toLocaleString("en-US");
+const sol = (n) => n == null ? "—" : n.toFixed(3) + " SOL";
+const time = (t) => new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const tokenLabel = (r) => r.symbol ? r.symbol : (r.mint || "").slice(0, 4) + "…" + (r.mint || "").slice(-4);
+const paperTag = (r) => r.paper ? ' <span class="muted">(paper)</span>' : "";
+
+async function get(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(path);
+  return res.json();
+}
+
+function fill(tableId, rows, render) {
+  const tbody = document.querySelector(`#${tableId} tbody`);
+  if (!rows.length) {
+    const cols = document.querySelectorAll(`#${tableId} th`).length;
+    tbody.innerHTML = `<tr><td class="empty" colspan="${cols}">nothing yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(render).join("");
+}
+
+async function refresh() {
+  try {
+    const [stats, positions, trades, burns, callouts] = await Promise.all([
+      get("/api/stats"), get("/api/positions"), get("/api/trades"),
+      get("/api/burns"), get("/api/callouts"),
+    ]);
+
+    const mode = $("mode");
+    mode.textContent = stats.mode === "live" ? "LIVE" : "PAPER MODE";
+    mode.className = "pill " + (stats.mode === "live" ? "live" : "paper");
+    $("halted").hidden = !stats.halted;
+    $("sol").textContent = "SOL $" + (stats.solUsd ? stats.solUsd.toFixed(0) : "—");
+
+    const t = stats.treasury;
+    $("t-treasury").textContent = sol(t.tradingSol);
+    $("t-pending").textContent = sol(t.pendingBuybackSol) + " pending buyback";
+    $("t-burned").textContent = Math.round(t.totalXeroBurned).toLocaleString("en-US");
+    $("t-buyback").textContent = sol(t.totalBuybackSol) + " bought back · " + stats.totalBurnEvents + " burns";
+    const profit = t.totalTradingProfitSol;
+    $("t-profit").textContent = (profit >= 0 ? "+" : "") + profit.toFixed(3) + " SOL";
+    $("t-profit").className = "value " + (profit >= 0 ? "pos" : "neg");
+    $("t-winrate").textContent = stats.winRate == null ? "no closed trades yet" : stats.winRate + "% win rate · " + stats.closedPositions + " closed";
+    $("t-fees").textContent = sol(t.totalCreatorFeesSol);
+    $("t-callout").textContent = sol(t.totalCalloutProfitSol) + " callout profit → burns";
+
+    fill("positions", positions.filter((p) => p.status === "open"), (p) => `
+      <tr><td class="sym">${tokenLabel(p)}${paperTag(p)}</td>
+      <td class="num">${usd(p.entryMcUsd)}</td><td class="num">${usd(p.peakMcUsd)}</td>
+      <td class="num">${p.solIn.toFixed(2)}</td><td class="muted">${p.sources.join(" + ")}</td>
+      <td class="num">${p.score}</td><td class="muted">${time(p.openedAt)}</td></tr>`);
+
+    fill("trades", trades.slice(0, 60), (tr) => `
+      <tr><td class="muted">${time(tr.at)}</td>
+      <td class="${tr.side === "buy" ? "pos" : "neg"}">${tr.side.toUpperCase()}</td>
+      <td class="sym">${tokenLabel(tr)}${paperTag(tr)}</td>
+      <td class="num">${tr.sol.toFixed(3)}</td><td class="num">${usd(tr.mcUsd)}</td>
+      <td class="muted">${tr.reason}</td>
+      <td>${tr.txSignature ? `<a href="https://solscan.io/tx/${tr.txSignature}" target="_blank" rel="noopener">tx</a>` : '<span class="muted">—</span>'}</td></tr>`);
+
+    fill("burns", burns, (b) => `
+      <tr><td class="muted">${time(b.at)}</td>
+      <td class="num">${b.solSpent.toFixed(3)}</td>
+      <td class="num">🔥 ${Math.round(b.xeroBurned).toLocaleString("en-US")}${paperTag(b)}</td>
+      <td class="muted">${b.fundedBy}</td>
+      <td>${b.buyTx ? `<a href="https://solscan.io/tx/${b.buyTx}" target="_blank" rel="noopener">tx</a>` : '<span class="muted">—</span>'}</td></tr>`);
+
+    fill("callouts", callouts, (c) => `
+      <tr><td class="muted">${time(c.at)}</td><td class="sym">${tokenLabel(c)}</td>
+      <td class="num">${usd(c.entryMcUsd)}</td><td class="num">${usd(c.peakMcUsd)}</td>
+      <td class="num ${c.peakMultiple >= 2 ? "pos" : ""}">${c.peakMultiple.toFixed(1)}x</td>
+      <td class="muted">${c.status}</td></tr>`);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>
