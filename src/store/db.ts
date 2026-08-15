@@ -9,7 +9,8 @@ import type {
 } from "../types.js";
 import { log } from "../util/logger.js";
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+// DATA_DIR env overrides (Railway: attach a volume and set DATA_DIR=/data)
+const DATA_DIR = path.resolve(process.env.DATA_DIR ?? path.join(process.cwd(), "data"));
 
 interface DbShape {
   treasury: TreasuryState;

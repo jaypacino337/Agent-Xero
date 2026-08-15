@@ -30,9 +30,16 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-function isLocal(req: http.IncomingMessage): boolean {
+function isAdmin(req: http.IncomingMessage): boolean {
+  // localhost always allowed
   const addr = req.socket.remoteAddress ?? "";
-  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+  if (addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1") return true;
+  // remote deployments (Railway etc.): set ADMIN_TOKEN and send it as a bearer token
+  if (config.server.adminToken) {
+    const auth = req.headers.authorization ?? "";
+    if (auth === `Bearer ${config.server.adminToken}`) return true;
+  }
+  return false;
 }
 
 async function readBody(req: http.IncomingMessage): Promise<unknown> {
@@ -77,7 +84,7 @@ export function startServer(callouts: CalloutTracker): void {
 
       // --- admin (localhost only) ---
       if (p.startsWith("/api/admin/")) {
-        if (!isLocal(req)) return json(res, 403, { error: "localhost only" });
+        if (!isAdmin(req)) return json(res, 403, { error: "unauthorized" });
         if (req.method !== "POST") return json(res, 405, { error: "POST only" });
         const body = (await readBody(req)) as { sol?: number };
         const sol = Number(body.sol);

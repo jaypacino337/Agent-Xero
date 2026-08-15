@@ -52,6 +52,23 @@ Out of the box (no keys at all) you get: pump.fun scanning, volume signals, pape
 | `X_*` credentials + `X_ENABLED=true` | real posting + mention engagement |
 | `PUMPPORTAL_API_KEY` + `PAPER_TRADING=false` | live execution |
 
+## Deploy on Railway
+
+The repo ships a `Dockerfile` + `railway.json` (healthcheck on `/api/stats`, restart on failure). Railway auto-detects both.
+
+1. Railway → **New Project → Deploy from GitHub repo** → pick this repo/branch.
+2. **Attach a volume** to the service, mount path `/data` (the Dockerfile sets `DATA_DIR=/data`). Without it, the ledger resets on every deploy.
+3. Set variables (Service → Variables). Minimum useful set:
+   - `PAPER_TRADING=true` (keep it true until the paper ledger earns your trust)
+   - `ADMIN_TOKEN=<long random string>` — required to use the admin API remotely, e.g.
+     `curl -X POST https://<app>.up.railway.app/api/admin/fees -H "Authorization: Bearer <token>" -d '{"sol":1.5}'`
+     (Telegram `/fees` etc. also works and needs no token)
+   - then any of: `SMART_WALLETS`, `TELEGRAM_*`, `ANTHROPIC_API_KEY`, `X_*`, `PUMPPORTAL_API_KEY`
+4. **Generate a domain** (Settings → Networking) — that URL is the live site + ledger. Railway injects `PORT` automatically; the app reads it.
+5. Watch logs: within seconds you should see `subscribed to new tokens + migrations` and, once signals fire, paper entries in the trade log.
+
+Vercel is not suitable — the bot is a long-running process with persistent websockets and background loops, which serverless platforms kill between requests.
+
 ## Going live — read this first
 
 1. Run paper mode for days, not hours. Tune `MIN_SCORE_TO_BUY`, volume thresholds and the smart-wallet list until the paper ledger looks like something you'd fund.

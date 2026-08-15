@@ -98,6 +98,8 @@ export const config = {
 
   server: {
     port: num("PORT", 3000),
+    /** if set, admin endpoints accept `Authorization: Bearer <token>` from anywhere */
+    adminToken: str("ADMIN_TOKEN"),
   },
 } as const;
 
