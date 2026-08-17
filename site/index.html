@@ -47,6 +47,21 @@
   }
   .pill.live { border-color: var(--good); color: var(--good); }
   .pill.paper { border-color: var(--accent); color: var(--accent); }
+  .btn {
+    display: inline-block;
+    background: var(--accent);
+    color: #0b0d10;
+    font-weight: 700;
+    padding: 7px 18px;
+    border-radius: 999px;
+    font-size: 13px;
+    letter-spacing: 0.06em;
+  }
+  .btn:hover { background: #ffb35c; }
+  .btn.ghost { background: transparent; color: var(--ink-2); border: 1px solid var(--border); font-weight: 500; }
+  .btn.ghost:hover { color: var(--ink); border-color: var(--ink-3); }
+  .mintline { font-size: 11px; color: var(--ink-3); margin-top: 10px; word-break: break-all; }
+  .mintline code { color: var(--ink-2); }
 
   .tiles {
     display: grid;
@@ -120,10 +135,14 @@
     high-conviction entries only — smart-wallet confluence, volume thresholds, pump.fun scanning.
     profits buy back and burn $XERO. everything below is the live ledger.</div>
   <div class="modebar">
+    <a id="buy" class="btn" href="#" hidden target="_blank" rel="noopener">BUY $XERO</a>
+    <a id="xlink" class="btn ghost" href="#" hidden target="_blank" rel="noopener">follow on 𝕏</a>
+    <a id="tglink" class="btn ghost" href="#" hidden target="_blank" rel="noopener">telegram</a>
     <span id="mode" class="pill">loading…</span>
     <span id="halted" class="pill" hidden>trading halted</span>
     <span id="sol" class="pill">SOL —</span>
   </div>
+  <div id="mintline" class="mintline" hidden>CA: <code id="mint"></code></div>
 </header>
 
 <section class="tiles" id="tiles">
@@ -270,6 +289,17 @@ async function refresh() {
   }
 }
 
+async function loadLinks() {
+  try {
+    const links = await get("/api/links");
+    if (links.buyUrl) { const b = $("buy"); b.href = links.buyUrl; b.hidden = false; }
+    if (links.xHandle) { const x = $("xlink"); x.href = "https://x.com/" + links.xHandle.replace(/^@/, ""); x.hidden = false; }
+    if (links.telegramUrl) { const t = $("tglink"); t.href = links.telegramUrl; t.hidden = false; }
+    if (links.mint) { $("mint").textContent = links.mint; $("mintline").hidden = false; }
+  } catch (err) { console.error(err); }
+}
+
+loadLinks();
 refresh();
 setInterval(refresh, 15000);
 </script>

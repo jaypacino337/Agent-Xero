@@ -59,6 +59,16 @@ export function startServer(callouts: CalloutTracker, airdrop?: AirdropEngine): 
     const p = url.pathname;
 
     try {
+      if (p === "/api/links") {
+        return json(res, 200, {
+          buyUrl:
+            config.links.buyUrl ||
+            (config.xero.mint ? `https://pump.fun/coin/${config.xero.mint}` : null),
+          xHandle: config.links.xHandle || null,
+          telegramUrl: config.links.telegramUrl || null,
+          mint: config.xero.mint || null,
+        });
+      }
       if (p === "/api/stats") {
         const openPositions = db.positions.filter((x) => x.status === "open");
         const closed = db.positions.filter((x) => x.status === "closed");

@@ -143,6 +143,13 @@ export const config = {
     model: str("PERSONA_MODEL", "claude-fable-5"),
   },
 
+  links: {
+    /** public buy link; defaults to the pump.fun coin page when XERO_MINT is set */
+    buyUrl: str("BUY_URL"),
+    xHandle: str("X_HANDLE"),
+    telegramUrl: str("TELEGRAM_URL"),
+  },
+
   server: {
     port: num("PORT", 3000),
     /** if set, admin endpoints accept `Authorization: Bearer <token>` from anywhere */
