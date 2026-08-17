@@ -100,8 +100,25 @@ console.log("status:", p.status, "pnl:", p.realizedPnlSol?.toFixed(3), "SOL —"
 assert(p.status === "closed", "expected position closed");
 assert((p.realizedPnlSol ?? 0) > 0, "expected profit on a 6k→100k runner");
 assert(db.treasury.pendingBuybackSol > 0, "expected profit routed to buyback pool");
+assert(db.treasury.pendingAirdropSol > 0, "expected profit share routed to airdrop pool");
+
+// profit split should match config (default 70/30)
+const pnl = p.realizedPnlSol!;
+const buybackShare = db.treasury.pendingBuybackSol / pnl;
+console.log(
+  `split check: ${(buybackShare * 100).toFixed(0)}% buyback / ${((db.treasury.pendingAirdropSol / pnl) * 100).toFixed(0)}% airdrop`,
+);
+assert(Math.abs(buybackShare - 0.7) < 0.01, "expected ~70% of profit to buyback");
+
+// callout rewards route 100% to the airdrop pool by default
+const beforeDrop = db.treasury.pendingAirdropSol;
+treasury.recordCalloutProfit(1.0);
+assert(
+  Math.abs(db.treasury.pendingAirdropSol - beforeDrop - 1.0) < 1e-9,
+  "expected 100% of callout rewards in airdrop pool",
+);
 
 console.log("treasury:", JSON.stringify(db.treasury));
-console.log("\n✅ E2E OK: signals → entry → target scale-out → trailing stop → profit → buyback pool");
+console.log("\n✅ E2E OK: signals → entry → target scale-out → trailing stop → profit → buyback + airdrop pools; callout rewards → airdrops");
 db.flush();
 process.exit(0);

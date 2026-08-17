@@ -32,19 +32,38 @@ const list = (key: string): string[] =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+/**
+ * Aggressiveness presets scale how often Xero pulls the trigger.
+ *  - chill: fewer, higher-conviction trades
+ *  - normal: defaults
+ *  - degen: "trade a lot" — lower score bar, lower volume thresholds, more slots
+ * Explicit env values always beat the preset.
+ */
+const AGGRESSIVENESS = (str("AGGRESSIVENESS", "normal").toLowerCase() as
+  | "chill"
+  | "normal"
+  | "degen");
+const PRESETS = {
+  chill: { minScore: 70, maxPositions: 3, volumeMult: 1.5, buyersMult: 1.25 },
+  normal: { minScore: 55, maxPositions: 6, volumeMult: 1, buyersMult: 1 },
+  degen: { minScore: 42, maxPositions: 10, volumeMult: 0.6, buyersMult: 0.6 },
+} as const;
+const preset = PRESETS[AGGRESSIVENESS] ?? PRESETS.normal;
+
 export const config = {
   paperTrading: bool("PAPER_TRADING", true),
+  aggressiveness: AGGRESSIVENESS in PRESETS ? AGGRESSIVENESS : "normal",
 
   trading: {
     solPerTrade: num("SOL_PER_TRADE", 0.25),
-    maxOpenPositions: num("MAX_OPEN_POSITIONS", 6),
+    maxOpenPositions: num("MAX_OPEN_POSITIONS", preset.maxPositions),
     dailyLossLimitSol: num("DAILY_LOSS_LIMIT_SOL", 2.0),
     entryMaxMcUsd: num("ENTRY_MAX_MC_USD", 10_000),
     targetMcUsd: num("TARGET_MC_USD", 100_000),
     takeProfitSellPct: num("TAKE_PROFIT_SELL_PCT", 60),
     stopLossPct: num("STOP_LOSS_PCT", 45),
     trailingStopPct: num("TRAILING_STOP_PCT", 30),
-    minScoreToBuy: num("MIN_SCORE_TO_BUY", 55),
+    minScoreToBuy: num("MIN_SCORE_TO_BUY", preset.minScore),
   },
 
   smartWallets: {
@@ -54,9 +73,9 @@ export const config = {
   },
 
   volume: {
-    thresholdSol: num("VOLUME_THRESHOLD_SOL", 40),
+    thresholdSol: num("VOLUME_THRESHOLD_SOL", Math.round(40 * preset.volumeMult)),
     windowSec: num("VOLUME_WINDOW_SEC", 120),
-    minUniqueBuyers: num("MIN_UNIQUE_BUYERS", 25),
+    minUniqueBuyers: num("MIN_UNIQUE_BUYERS", Math.round(25 * preset.buyersMult)),
   },
 
   telegram: {
@@ -74,9 +93,37 @@ export const config = {
 
   xero: {
     mint: str("XERO_MINT"),
-    buybackProfitPct: num("BUYBACK_PROFIT_PCT", 100),
+    buybackProfitPct: num("BUYBACK_PROFIT_PCT", 70),
     buybackMinSol: num("BUYBACK_MIN_SOL", 0.1),
     burnAddress: str("BURN_ADDRESS", "1nc1nerator11111111111111111111111111111111"),
+  },
+
+  airdrop: {
+    enabled: bool("AIRDROP_ENABLED", true),
+    /** % of realized trading profit routed to the holder airdrop pool */
+    profitPct: num("AIRDROP_PROFIT_PCT", 30),
+    /** % of callout rewards routed to the airdrop pool (rest -> buyback) */
+    calloutRewardsPct: num("CALLOUT_REWARDS_AIRDROP_PCT", 100),
+    /** minimum accumulated SOL before an airdrop executes */
+    minSol: num("AIRDROP_MIN_SOL", 0.5),
+    /** "linear" = pro-rata by holdings; "random" = holdings-weighted lottery */
+    mode: (str("AIRDROP_MODE", "random") === "linear" ? "linear" : "random") as
+      | "linear"
+      | "random",
+    /** random mode: number of winners splitting the pool equally */
+    randomWinners: num("AIRDROP_RANDOM_WINNERS", 10),
+    /** ignore dust wallets below this share of supply (e.g. 0.05 = 0.05%) */
+    minHoldingPct: num("AIRDROP_MIN_HOLDING_PCT", 0.05),
+    /** wallets never eligible (LPs, exchange wallets, team) — comma separated */
+    exclude: list("AIRDROP_EXCLUDE"),
+    maxRecipientsPerDrop: num("AIRDROP_MAX_RECIPIENTS", 200),
+  },
+
+  chain: {
+    rpcUrl: str("RPC_URL", "https://api.mainnet-beta.solana.com"),
+    heliusApiKey: str("HELIUS_API_KEY"),
+    /** base58 or JSON-array secret key of the operator wallet (burns + airdrops) */
+    walletSecretKey: str("WALLET_SECRET_KEY"),
   },
 
   x: {

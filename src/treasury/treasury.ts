@@ -34,22 +34,37 @@ export const treasury = {
     const pnl = p.realizedPnlSol ?? 0;
     db.treasury.totalTradingProfitSol += pnl;
     if (pnl > 0) {
-      const toBuyback = pnl * (config.xero.buybackProfitPct / 100);
-      db.treasury.tradingSol -= toBuyback;
+      // split profit between buyback-and-burn and the holder airdrop pool;
+      // anything not allocated stays in the trading treasury (compounding)
+      const airdropPct = config.airdrop.enabled ? config.airdrop.profitPct : 0;
+      const scale = Math.min(1, 100 / (config.xero.buybackProfitPct + airdropPct));
+      const toBuyback = pnl * (config.xero.buybackProfitPct / 100) * scale;
+      const toAirdrop = pnl * (airdropPct / 100) * scale;
+      db.treasury.tradingSol -= toBuyback + toAirdrop;
       db.treasury.pendingBuybackSol += toBuyback;
+      db.treasury.pendingAirdropSol += toAirdrop;
       log.info(
         "treasury",
-        `${toBuyback.toFixed(3)} SOL profit earmarked for buyback (pending ${db.treasury.pendingBuybackSol.toFixed(3)})`,
+        `profit split: ${toBuyback.toFixed(3)} SOL -> buyback, ${toAirdrop.toFixed(3)} SOL -> airdrop pool`,
       );
     }
     db.markDirty("treasury");
   },
 
-  /** Callout profits (from the callout tracker) go straight to buyback. */
+  /**
+   * Callout rewards (pump.fun fee-share payouts earned from calls).
+   * Default: 100% to the holder airdrop pool, remainder to buyback.
+   */
   recordCalloutProfit(sol: number): void {
     db.treasury.totalCalloutProfitSol += sol;
-    db.treasury.pendingBuybackSol += sol;
+    const pct = config.airdrop.enabled ? config.airdrop.calloutRewardsPct : 0;
+    const toAirdrop = sol * (pct / 100);
+    db.treasury.pendingAirdropSol += toAirdrop;
+    db.treasury.pendingBuybackSol += sol - toAirdrop;
     db.markDirty("treasury");
-    log.info("treasury", `+${sol.toFixed(3)} SOL callout profit -> buyback pool`);
+    log.info(
+      "treasury",
+      `+${sol.toFixed(3)} SOL callout rewards (${toAirdrop.toFixed(3)} -> holder airdrops, ${(sol - toAirdrop).toFixed(3)} -> buyback)`,
+    );
   },
 };

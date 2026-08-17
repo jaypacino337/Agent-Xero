@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
+  AirdropEvent,
   BurnEvent,
   Callout,
   Position,
@@ -18,22 +19,26 @@ interface DbShape {
   trades: TradeEvent[];
   burns: BurnEvent[];
   callouts: Callout[];
+  airdrops: AirdropEvent[];
 }
 
 const defaults: DbShape = {
   treasury: {
     tradingSol: 0,
     pendingBuybackSol: 0,
+    pendingAirdropSol: 0,
     totalCreatorFeesSol: 0,
     totalTradingProfitSol: 0,
     totalCalloutProfitSol: 0,
     totalBuybackSol: 0,
     totalXeroBurned: 0,
+    totalAirdropSol: 0,
   },
   positions: [],
   trades: [],
   burns: [],
   callouts: [],
+  airdrops: [],
 };
 
 /**
@@ -60,6 +65,8 @@ class Db {
         }
       }
     }
+    // migrate: fill in any treasury fields added after the ledger was created
+    this.state.treasury = { ...defaults.treasury, ...this.state.treasury };
   }
 
   private fileFor(key: keyof DbShape) {
@@ -80,6 +87,9 @@ class Db {
   }
   get callouts() {
     return this.state.callouts;
+  }
+  get airdrops() {
+    return this.state.airdrops;
   }
 
   markDirty(...keys: (keyof DbShape)[]) {

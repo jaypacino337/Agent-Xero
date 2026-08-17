@@ -27,7 +27,9 @@ Every trade, buyback and burn is written to a public ledger and served on the si
 
 **Strategy** — catch runners early: only enter while market cap is **below `ENTRY_MAX_MC_USD` (default $10k)** and the composite score clears the bar. Scale out **`TAKE_PROFIT_SELL_PCT`** when the token crosses **`TARGET_MC_USD` (default $100k)**, ride the rest with a trailing stop, hard stop-loss below entry. (Nobody can literally know in advance which sub-$10k token hits $100k — the scorer is the proxy, and every knob is tunable in `.env`.)
 
-**Treasury & burn** — creator fees fund trading; realized profits (and callout revenue) accumulate and auto-execute $XERO buybacks, which are burned. Lifetime totals (fees, profit, SOL bought back, $XERO burned) are on the site.
+**Treasury, burns & holder airdrops** — creator fees fund trading. Realized profits split between $XERO buybacks (default 70%) and a **holder airdrop pool** (default 30%); **callout rewards route 100% to airdrops** by default. Buybacks are burned on-chain (SPL burn instruction when `WALLET_SECRET_KEY` is set). Airdrops snapshot eligible holders (Helius or raw RPC, dust/LP/exclusions filtered) and pay them either **random** (holdings-weighted lottery, N winners split the pool) or **linear** (pro-rata). Every burn and every drop is in the public ledger — hold $XERO to be in every draw.
+
+**Aggressiveness** — `AGGRESSIVENESS=chill|normal|degen` presets how often Xero pulls the trigger (score bar, position slots, volume thresholds). `degen` = trade a lot; explicit env values always override the preset.
 
 **Social** — Xero posts entries, runner hits and burns on X in its own voice (Claude-generated, template fallback), and replies to mentions — including other agents like `@aixbt_agent`. Rate-limited, guard-railed (never promises profits, never invents numbers).
 
@@ -74,12 +76,12 @@ Vercel is not suitable — the bot is a long-running process with persistent web
 1. Run paper mode for days, not hours. Tune `MIN_SCORE_TO_BUY`, volume thresholds and the smart-wallet list until the paper ledger looks like something you'd fund.
 2. Fund a **dedicated** PumpPortal Lightning wallet with only what the treasury should trade. Record deposits with `/deposit` so the ledger matches the wallet.
 3. Set `PAPER_TRADING=false`. Risk rails: `MAX_OPEN_POSITIONS`, `DAILY_LOSS_LIMIT_SOL` (halts entries for the day), `/halt` kill switch.
-4. **Live burns:** buybacks execute automatically via PumpPortal, but the burn itself is an SPL transfer to the incinerator (`1nc1nerator1111…`). That transfer isn't something PumpPortal exposes, so in live mode execute it from the operator wallet (or wire in `@solana/web3.js` — the ledger records the buyback and leaves `burnTx` empty until then). Paper mode simulates the full loop.
-5. Creator-fee claims and pump.fun fee-share/callout revenue arrive on-chain outside this bot — record them with `/fees <sol>` and `POST /api/admin/callout-profit {"sol": n}` so they enter the ledger and the buyback pool.
+4. **Live burns & airdrops:** set `WALLET_SECRET_KEY` (the PumpPortal wallet's key, or any operator wallet holding the bought $XERO and airdrop SOL) and both run fully on-chain — buybacks are burned with the SPL burn instruction (supply actually decreases) and airdrop SOL is sent in batched transfers. Without the key, buybacks record with `burnTx` empty for manual burning and airdrops stay pooled. Use a paid RPC (`RPC_URL`) for live sends; add `HELIUS_API_KEY` for fast holder snapshots.
+5. Creator-fee claims and pump.fun fee-share/callout rewards arrive on-chain outside this bot — record them with `/fees <sol>` and `POST /api/admin/callout-profit {"sol": n}` so they enter the ledger and get split into the airdrop/buyback pools.
 
 ## API
 
-`GET /api/stats · /api/positions · /api/trades · /api/burns · /api/callouts` — public, consumed by the site.
+`GET /api/stats · /api/positions · /api/trades · /api/burns · /api/callouts · /api/airdrops` — public, consumed by the site.
 `POST /api/admin/{fees|deposit|callout-profit|halt|resume}` — localhost only.
 
 ## Layout

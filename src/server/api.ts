@@ -8,6 +8,7 @@ import { db } from "../store/db.js";
 import { treasury } from "../treasury/treasury.js";
 import { log } from "../util/logger.js";
 import type { CalloutTracker } from "../social/callouts.js";
+import type { AirdropEngine } from "../treasury/airdrop.js";
 
 /**
  * Serves the public site (./site) and a read-only JSON API the site consumes.
@@ -52,7 +53,7 @@ async function readBody(req: http.IncomingMessage): Promise<unknown> {
   }
 }
 
-export function startServer(callouts: CalloutTracker): void {
+export function startServer(callouts: CalloutTracker, airdrop?: AirdropEngine): void {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const p = url.pathname;
@@ -81,6 +82,7 @@ export function startServer(callouts: CalloutTracker): void {
       if (p === "/api/burns") return json(res, 200, [...db.burns].reverse());
       if (p === "/api/callouts")
         return json(res, 200, [...db.callouts].reverse().slice(0, 100));
+      if (p === "/api/airdrops") return json(res, 200, [...db.airdrops].reverse());
 
       // --- admin (localhost only) ---
       if (p.startsWith("/api/admin/")) {
@@ -99,6 +101,10 @@ export function startServer(callouts: CalloutTracker): void {
         if (p === "/api/admin/callout-profit" && sol > 0) {
           callouts.recordProfit(sol);
           return json(res, 200, { ok: true, treasury: db.treasury });
+        }
+        if (p === "/api/admin/airdrop-now") {
+          const ok = (await airdrop?.runOnce()) ?? false;
+          return json(res, 200, { ok, treasury: db.treasury });
         }
         if (p === "/api/admin/halt") {
           risk.halt();

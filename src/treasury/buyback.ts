@@ -1,5 +1,15 @@
+import {
+  PublicKey,
+  Transaction,
+  sendAndConfirmTransaction,
+} from "@solana/web3.js";
+import {
+  createBurnInstruction,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 import { config } from "../config.js";
 import { executeTrade } from "../execution/pumpportal.js";
+import { getConnection, getKeypair } from "../chain/wallet.js";
 import { tracker } from "../signals/bus.js";
 import { db } from "../store/db.js";
 import type { BurnEvent } from "../types.js";
@@ -9,11 +19,12 @@ import { log, shortId } from "../util/logger.js";
  * Buyback & burn engine for $XERO.
  *
  * Whenever the pending pool crosses BUYBACK_MIN_SOL, the accumulated SOL is
- * used to market-buy $XERO. In paper mode the fill is simulated at the last
- * observed price. In live mode the buy executes via PumpPortal; the burn
- * (SPL transfer to the incinerator) must currently be executed by the
- * operator wallet — the event is recorded with burnTx left empty until it is
- * confirmed (see README "Live burns").
+ * used to market-buy $XERO. Paper mode simulates the fill at the last
+ * observed price. Live mode buys via PumpPortal, then — when
+ * WALLET_SECRET_KEY is configured — burns the wallet's entire $XERO balance
+ * on-chain with the SPL burn instruction (supply actually decreases; no
+ * incinerator transfer needed). Without a wallet key the buyback is recorded
+ * with burnTx empty for a manual burn.
  */
 export class BuybackEngine {
   private running = false;
@@ -44,6 +55,7 @@ export class BuybackEngine {
 
   private async executeBuyback(sol: number): Promise<void> {
     let buyTx: string | undefined;
+    let burnTx: string | undefined;
     let xeroBought = 0;
 
     if (config.paperTrading) {
@@ -64,6 +76,11 @@ export class BuybackEngine {
       buyTx = result.signature;
       const price = tracker.get(config.xero.mint)?.priceSol;
       xeroBought = price && price > 0 ? sol / price : 0;
+      const burned = await this.burnHeldXero();
+      if (burned) {
+        burnTx = burned.signature;
+        xeroBought = burned.amount; // exact on-chain amount beats the estimate
+      }
     }
 
     const event: BurnEvent = {
@@ -73,6 +90,7 @@ export class BuybackEngine {
       xeroBought,
       xeroBurned: xeroBought,
       buyTx,
+      burnTx,
       fundedBy: "trading-profit",
       paper: config.paperTrading,
     };
@@ -86,5 +104,39 @@ export class BuybackEngine {
       `🔥 bought back ${sol.toFixed(3)} SOL of $XERO (${xeroBought.toFixed(0)} tokens) -> burn`,
     );
     this.onBurn?.(event);
+  }
+
+  /**
+   * Burn the operator wallet's entire $XERO balance via the SPL burn
+   * instruction. Returns undefined (and logs) when no wallet key is set —
+   * the buyback still records, burn happens manually.
+   */
+  private async burnHeldXero(): Promise<{ signature: string; amount: number } | undefined> {
+    const keypair = getKeypair();
+    if (!keypair) {
+      log.warn("buyback", "no WALLET_SECRET_KEY — bought tokens held, burn manually");
+      return undefined;
+    }
+    try {
+      const conn = getConnection();
+      const mint = new PublicKey(config.xero.mint);
+      const ata = getAssociatedTokenAddressSync(mint, keypair.publicKey);
+      const balance = await conn.getTokenAccountBalance(ata);
+      const raw = BigInt(balance.value.amount);
+      if (raw === 0n) {
+        log.warn("buyback", "wallet holds 0 XERO after buy — nothing to burn yet");
+        return undefined;
+      }
+      const tx = new Transaction().add(
+        createBurnInstruction(ata, mint, keypair.publicKey, raw),
+      );
+      const signature = await sendAndConfirmTransaction(conn, tx, [keypair]);
+      const amount = balance.value.uiAmount ?? 0;
+      log.info("buyback", `🔥 on-chain burn of ${amount} XERO: ${signature}`);
+      return { signature, amount };
+    } catch (err) {
+      log.error("buyback", "on-chain burn failed (tokens held in wallet)", err);
+      return undefined;
+    }
   }
 }

@@ -12,6 +12,7 @@ import { SmartWalletWatcher } from "./signals/smartWallets.js";
 import { TelegramIngest } from "./signals/telegram.js";
 import { startVolumeDetector } from "./signals/volume.js";
 import { db } from "./store/db.js";
+import { AirdropEngine } from "./treasury/airdrop.js";
 import { BuybackEngine } from "./treasury/buyback.js";
 import { treasury } from "./treasury/treasury.js";
 import { log } from "./util/logger.js";
@@ -32,6 +33,7 @@ startVolumeDetector();
 const trader = new Trader();
 const callouts = new CalloutTracker();
 const buyback = new BuybackEngine();
+const airdrop = new AirdropEngine();
 
 // wire trader -> treasury / callouts / social
 trader.on("entry", (position) => {
@@ -57,6 +59,13 @@ trader.on("exit", (position) => {
 buyback.onBurn = (event) => {
   void (async () => {
     const text = await persona.burnPost(event);
+    await postTweet(text);
+  })();
+};
+
+airdrop.onDrop = (event) => {
+  void (async () => {
+    const text = await persona.airdropPost(event);
     await postTweet(text);
   })();
 };
@@ -88,9 +97,10 @@ smartWallets.start();
 trader.start();
 callouts.start();
 buyback.start();
+airdrop.start();
 telegram.start();
 engage.start();
-startServer(callouts);
+startServer(callouts, airdrop);
 
 // seed paper treasury so the engine can trade out of the box
 if (config.paperTrading && db.treasury.tradingSol === 0) {

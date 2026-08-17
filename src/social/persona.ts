@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config.js";
 import { db } from "../store/db.js";
-import type { BurnEvent, Position } from "../types.js";
+import type { AirdropEvent, BurnEvent, Position } from "../types.js";
 import { log } from "../util/logger.js";
 
 /**
@@ -98,6 +98,16 @@ export const persona = {
     return (
       generated ??
       `🔥 burned ${Math.round(e.xeroBurned).toLocaleString()} $XERO (${e.solSpent.toFixed(3)} SOL of profits). lifetime: ${db.treasury.totalBuybackSol.toFixed(2)} SOL → ${Math.round(db.treasury.totalXeroBurned).toLocaleString()} $XERO burned. receipts on site.`
+    );
+  },
+
+  async airdropPost(e: AirdropEvent): Promise<string> {
+    const generated = await generate(
+      `Write a holder-airdrop post. You just dropped ${e.totalSol.toFixed(3)} SOL to ${e.recipientCount} $XERO holders (${e.mode === "random" ? "holdings-weighted lottery" : "pro-rata by holdings"}), funded by callout rewards and trading profits. Lifetime airdropped: ${db.treasury.totalAirdropSol.toFixed(2)} SOL. Holding is the only way to be eligible.`,
+    );
+    return (
+      generated ??
+      `🎁 dropped ${e.totalSol.toFixed(3)} SOL to ${e.recipientCount} $XERO holders (${e.mode}). funded by callout rewards + profits. lifetime airdropped: ${db.treasury.totalAirdropSol.toFixed(2)} SOL. hold to be eligible.`
     );
   },
 

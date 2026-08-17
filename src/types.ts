@@ -96,15 +96,31 @@ export interface Callout {
   profitSol?: number;
 }
 
+export interface AirdropEvent {
+  id: string;
+  at: number;
+  totalSol: number;
+  mode: "linear" | "random";
+  recipientCount: number;
+  /** top recipients stored for the site (full list in tx history) */
+  recipients: { wallet: string; sol: number }[];
+  txs: string[];
+  fundedBy: "callout-rewards" | "trading-profit" | "creator-fees";
+  paper: boolean;
+}
+
 export interface TreasuryState {
   /** SOL available to trade */
   tradingSol: number;
   /** SOL accumulated and earmarked for the next buyback */
   pendingBuybackSol: number;
+  /** SOL accumulated and earmarked for the next holder airdrop */
+  pendingAirdropSol: number;
   /** lifetime totals, for the site */
   totalCreatorFeesSol: number;
   totalTradingProfitSol: number;
   totalCalloutProfitSol: number;
   totalBuybackSol: number;
   totalXeroBurned: number;
+  totalAirdropSol: number;
 }

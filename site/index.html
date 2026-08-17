@@ -61,6 +61,7 @@
   .tile .value { font-size: 26px; font-weight: 700; margin-top: 6px; }
   .tile .sub { font-size: 12px; color: var(--ink-2); margin-top: 4px; }
   .tile.burn .value { color: var(--accent); }
+  .tile.drop .value { color: #7dd3fc; }
 
   h2 {
     font-size: 13px;
@@ -124,6 +125,7 @@
   <div class="tile burn"><div class="label">$XERO burned 🔥</div><div class="value" id="t-burned">—</div><div class="sub" id="t-buyback">—</div></div>
   <div class="tile"><div class="label">Trading profit (lifetime)</div><div class="value" id="t-profit">—</div><div class="sub" id="t-winrate">—</div></div>
   <div class="tile"><div class="label">Creator fees collected</div><div class="value" id="t-fees">—</div><div class="sub" id="t-callout">—</div></div>
+  <div class="tile drop"><div class="label">Airdropped to holders 🎁</div><div class="value" id="t-airdrop">—</div><div class="sub" id="t-airdrop-sub">—</div></div>
 </section>
 
 <h2>Open positions</h2>
@@ -144,6 +146,12 @@
   <tbody></tbody>
 </table></div>
 
+<h2>Holder airdrops</h2>
+<div class="scroll"><table id="airdrops">
+  <thead><tr><th>Time</th><th class="num">SOL dropped</th><th class="num">Recipients</th><th>Mode</th><th>Funded by</th><th>Tx</th></tr></thead>
+  <tbody></tbody>
+</table></div>
+
 <h2>Callouts</h2>
 <div class="scroll"><table id="callouts">
   <thead><tr><th>Time</th><th>Token</th><th class="num">Called at MC</th><th class="num">Peak MC</th><th class="num">Peak multiple</th><th>Status</th></tr></thead>
@@ -156,8 +164,9 @@
   <ol>
     <li>pump.fun <b>creator fees</b> fund the trading treasury.</li>
     <li>Xero takes <b>high-quality entries only</b>: tracked profitable wallets buying in confluence, buy-volume thresholds, early pump.fun momentum, and calls ingested from telegram — scored together; sub-$10k entries hunting $100k+ runners.</li>
-    <li><b>trading profits</b> and <b>callout revenue</b> buy back $XERO on-market.</li>
-    <li>bought-back $XERO is <b>burned</b>. totals above; every event in the ledger.</li>
+    <li><b>trading profits</b> split between $XERO buybacks and the <b>holder airdrop pool</b>.</li>
+    <li><b>callout rewards</b> (pump.fun fee share earned from calls) go 100% to holder airdrops.</li>
+    <li>bought-back $XERO is <b>burned</b>; airdrops pay eligible holders — random lottery weighted by holdings, or pro-rata. hold $XERO to be in every draw.</li>
   </ol>
 </div>
 
@@ -192,9 +201,9 @@ function fill(tableId, rows, render) {
 
 async function refresh() {
   try {
-    const [stats, positions, trades, burns, callouts] = await Promise.all([
+    const [stats, positions, trades, burns, callouts, airdrops] = await Promise.all([
       get("/api/stats"), get("/api/positions"), get("/api/trades"),
-      get("/api/burns"), get("/api/callouts"),
+      get("/api/burns"), get("/api/callouts"), get("/api/airdrops"),
     ]);
 
     const mode = $("mode");
@@ -213,7 +222,9 @@ async function refresh() {
     $("t-profit").className = "value " + (profit >= 0 ? "pos" : "neg");
     $("t-winrate").textContent = stats.winRate == null ? "no closed trades yet" : stats.winRate + "% win rate · " + stats.closedPositions + " closed";
     $("t-fees").textContent = sol(t.totalCreatorFeesSol);
-    $("t-callout").textContent = sol(t.totalCalloutProfitSol) + " callout profit → burns";
+    $("t-callout").textContent = sol(t.totalCalloutProfitSol) + " callout rewards earned";
+    $("t-airdrop").textContent = sol(t.totalAirdropSol);
+    $("t-airdrop-sub").textContent = sol(t.pendingAirdropSol) + " pending next drop";
 
     fill("positions", positions.filter((p) => p.status === "open"), (p) => `
       <tr><td class="sym">${tokenLabel(p)}${paperTag(p)}</td>
@@ -235,6 +246,13 @@ async function refresh() {
       <td class="num">🔥 ${Math.round(b.xeroBurned).toLocaleString("en-US")}${paperTag(b)}</td>
       <td class="muted">${b.fundedBy}</td>
       <td>${b.buyTx ? `<a href="https://solscan.io/tx/${b.buyTx}" target="_blank" rel="noopener">tx</a>` : '<span class="muted">—</span>'}</td></tr>`);
+
+    fill("airdrops", airdrops, (a) => `
+      <tr><td class="muted">${time(a.at)}</td>
+      <td class="num">🎁 ${a.totalSol.toFixed(3)}${paperTag(a)}</td>
+      <td class="num">${a.recipientCount}</td>
+      <td class="muted">${a.mode}</td><td class="muted">${a.fundedBy}</td>
+      <td>${a.txs && a.txs.length ? `<a href="https://solscan.io/tx/${a.txs[0]}" target="_blank" rel="noopener">tx</a>` : '<span class="muted">—</span>'}</td></tr>`);
 
     fill("callouts", callouts, (c) => `
       <tr><td class="muted">${time(c.at)}</td><td class="sym">${tokenLabel(c)}</td>
