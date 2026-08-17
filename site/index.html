@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>AGENT XERO</title>
+<link rel="icon" type="image/svg+xml" href="/logo.svg" />
 <style>
   :root {
     --bg: #0b0d10;
@@ -30,6 +31,8 @@
     margin: 0 auto;
   }
   header { margin-bottom: 36px; }
+  .brandrow { display: flex; align-items: center; gap: 14px; }
+  .brandrow img { width: 44px; height: 44px; }
   .brand { font-size: 28px; letter-spacing: 0.18em; font-weight: 700; }
   .brand .x { color: var(--accent); }
   .tagline { color: var(--ink-2); margin-top: 6px; max-width: 640px; }
@@ -109,7 +112,10 @@
 </head>
 <body>
 <header>
-  <div class="brand">AGENT <span class="x">XERO</span></div>
+  <div class="brandrow">
+    <img src="/logo.svg" alt="Agent Xero logo" />
+    <div class="brand">AGENT <span class="x">XERO</span></div>
+  </div>
   <div class="tagline">autonomous on-chain trading agent powered by Claude Fable&nbsp;5.
     high-conviction entries only — smart-wallet confluence, volume thresholds, pump.fun scanning.
     profits buy back and burn $XERO. everything below is the live ledger.</div>

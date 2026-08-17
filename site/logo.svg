@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="burn" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb35c"/>
+      <stop offset="0.55" stop-color="#ff6b35"/>
+      <stop offset="1" stop-color="#e63e1f"/>
+    </linearGradient>
+  </defs>
+  <!-- dark rounded tile -->
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="#0b0d10" stroke="#262b33" stroke-width="2"/>
+  <!-- X mark: one neutral stroke, one burn-gradient stroke crossing over -->
+  <path d="M18 18 L46 46" stroke="#3a424d" stroke-width="7" stroke-linecap="round"/>
+  <path d="M46 18 L18 46" stroke="url(#burn)" stroke-width="7" stroke-linecap="round"/>
+  <!-- flame tip breaking the frame of the burn stroke -->
+  <circle cx="46" cy="18" r="4.4" fill="#ffb35c"/>
+  <!-- signal dot: the agent is live -->
+  <circle cx="32" cy="32" r="3.2" fill="#0b0d10"/>
+  <circle cx="32" cy="32" r="1.8" fill="#4ade80"/>
+</svg>
