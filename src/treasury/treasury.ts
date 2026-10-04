@@ -1,14 +1,15 @@
 import { config } from "../config.js";
 import { db } from "../store/db.js";
-import type { Position } from "../types.js";
-import { log } from "../util/logger.js";
+import type { ClaimEvent, Position } from "../types.js";
+import { log, shortId } from "../util/logger.js";
 
 /**
  * Treasury accounting.
  *
  * Inflows:
- *  - pump.fun creator fees (recorded via /fees telegram command or the API) —
- *    these fund the trading treasury
+ *  - pump.fun creator fees — claimed automatically via PumpPortal
+ *    (treasury/fees.ts); /fees and POST /api/admin/fees remain as a manual
+ *    fallback — these fund the trading treasury
  *  - trading profits — a configurable share is earmarked for buyback & burn
  *  - callout profits — routed to buyback & burn
  *
@@ -16,11 +17,26 @@ import { log } from "../util/logger.js";
  * and burned $XERO come straight from this ledger.
  */
 export const treasury = {
-  recordCreatorFees(sol: number): void {
+  recordCreatorFees(
+    sol: number,
+    meta: { source?: ClaimEvent["source"]; signature?: string } = {},
+  ): ClaimEvent {
+    const source = meta.source ?? "manual";
     db.treasury.totalCreatorFeesSol += sol;
     db.treasury.tradingSol += sol;
-    db.markDirty("treasury");
-    log.info("treasury", `+${sol} SOL creator fees (trading balance ${db.treasury.tradingSol.toFixed(3)})`);
+    if (source === "auto") db.treasury.totalAutoClaimedSol += sol;
+    const event: ClaimEvent = {
+      id: shortId(),
+      at: Date.now(),
+      sol,
+      source,
+      signature: meta.signature,
+      paper: config.paperTrading,
+    };
+    db.claims.push(event);
+    db.commit("treasury", "claims");
+    log.info("treasury", `+${sol} SOL creator fees (${source}; trading balance ${db.treasury.tradingSol.toFixed(3)})`);
+    return event;
   },
 
   recordDeposit(sol: number): void {

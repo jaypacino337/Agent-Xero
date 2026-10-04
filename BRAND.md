@@ -14,7 +14,7 @@
 
 Type: monospace everywhere (SF Mono / JetBrains Mono). Wide letter-spacing on "AGENT XERO".
 
-Logo concept (see `site/logo.svg`): a rounded dark tile, an X made of two strokes —
+Logo concept (see `dashboard/public/icon.svg` for the terminal-palette version used by the dashboard): a rounded dark tile, an X made of two strokes —
 one steel-gray, one burn-orange gradient crossing OVER it (the agent beats the market),
 an ember tip where the orange stroke exits, and a tiny green signal dot at the center
 (the agent is live). Keep these motifs in generated art.

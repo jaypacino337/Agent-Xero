@@ -78,6 +78,9 @@ export interface BurnEvent {
   xeroBurned: number;
   buyTx?: string;
   burnTx?: string;
+  /** exact raw amounts (live only): burned is always ≤ bought, never the whole wallet */
+  boughtRaw?: string;
+  burnedRaw?: string;
   fundedBy: "trading-profit" | "creator-fees" | "callout-profit";
   paper: boolean;
 }
@@ -100,12 +103,27 @@ export interface AirdropEvent {
   id: string;
   at: number;
   totalSol: number;
-  mode: "linear" | "random";
+  mode: "linear" | "random" | "equal";
   recipientCount: number;
+  /** frozen plan id (DATA_DIR/ledgers/<planId>.plan.json + .jsonl ledger) */
+  planId?: string;
+  /** snapshot slot: the lottery seed, so a draw can be re-derived */
+  slot?: number;
+  /** only guest-list (seated) wallets were eligible */
+  seated?: boolean;
   /** top recipients stored for the site (full list in tx history) */
   recipients: { wallet: string; sol: number }[];
   txs: string[];
   fundedBy: "callout-rewards" | "trading-profit" | "creator-fees";
+  paper: boolean;
+}
+
+export interface ClaimEvent {
+  id: string;
+  at: number;
+  sol: number;
+  source: "auto" | "manual";
+  signature?: string;
   paper: boolean;
 }
 
@@ -123,4 +141,12 @@ export interface TreasuryState {
   totalBuybackSol: number;
   totalXeroBurned: number;
   totalAirdropSol: number;
+  /** SOL moved out of the pending pools into a buyback/drop that is executing */
+  inFlightBuybackSol: number;
+  inFlightAirdropSol: number;
+  /** of totalCreatorFeesSol, how much came from automatic claims */
+  totalAutoClaimedSol: number;
+  /** last read of claimable creator fees (null = unknown) */
+  claimableSol: number | null;
+  claimableAt: number | null;
 }

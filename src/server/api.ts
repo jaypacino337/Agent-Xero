@@ -6,22 +6,42 @@ import { risk } from "../engine/risk.js";
 import { getSolUsd } from "../market/solPrice.js";
 import { db } from "../store/db.js";
 import { treasury } from "../treasury/treasury.js";
+import { autoClaimLive } from "../treasury/fees.js";
+import { loadPlan, planProgress } from "../treasury/payout.js";
+import { LEDGER_DIR } from "../store/db.js";
 import { log } from "../util/logger.js";
 import type { CalloutTracker } from "../social/callouts.js";
 import type { AirdropEngine } from "../treasury/airdrop.js";
 
 /**
- * Serves the public site (./site) and a read-only JSON API the site consumes.
+ * Serves the dashboard (static Next.js export in dashboard/out, built by
+ * `npm run build:dashboard`) and the read-only JSON API it polls.
  * A couple of localhost-only admin endpoints mirror the telegram commands.
  */
-const SITE_DIR = path.resolve(process.cwd(), "site");
+const SITE_DIR = path.resolve(process.env.DASHBOARD_DIR ?? path.join(process.cwd(), "dashboard", "out"));
 const MIME: Record<string, string> = {
-  ".html": "text/html",
+  ".html": "text/html; charset=utf-8",
   ".css": "text/css",
   ".js": "text/javascript",
+  ".json": "application/json",
+  ".txt": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
 };
+
+function activeAirdrop() {
+  const job = db.jobs.airdrop;
+  if (!job) return null;
+  const plan = loadPlan(LEDGER_DIR, job.id);
+  if (!plan) return { id: job.id, sol: job.sol, startedAt: job.startedAt, paid: 0, total: 0 };
+  const p = planProgress(LEDGER_DIR, plan);
+  return { id: job.id, sol: job.sol, startedAt: job.startedAt, paid: p.paid, total: p.total, mode: plan.mode, slot: plan.slot };
+}
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
@@ -83,6 +103,12 @@ export function startServer(callouts: CalloutTracker, airdrop?: AirdropEngine): 
           winRate: closed.length ? Math.round((wins / closed.length) * 100) : null,
           totalBurnEvents: db.burns.length,
           liveCallouts: db.callouts.filter((c) => c.status === "live").length,
+          airdropMode: config.airdrop.mode,
+          seatsGated: !!config.seats.url,
+          autoClaim: config.claims.autoClaim ? (autoClaimLive() ? "live" : "read-only") : "off",
+          activeBuyback: db.jobs.buyback ?? null,
+          activeAirdrop: activeAirdrop(),
+          serverTime: Date.now(),
         });
       }
       if (p === "/api/positions")
@@ -93,15 +119,21 @@ export function startServer(callouts: CalloutTracker, airdrop?: AirdropEngine): 
       if (p === "/api/callouts")
         return json(res, 200, [...db.callouts].reverse().slice(0, 100));
       if (p === "/api/airdrops") return json(res, 200, [...db.airdrops].reverse());
+      if (p === "/api/claims") return json(res, 200, [...db.claims].reverse().slice(0, 100));
+      if (p === "/api/health") return json(res, 200, { ok: true, mode: config.paperTrading ? "paper" : "live" });
 
       // --- admin (localhost only) ---
       if (p.startsWith("/api/admin/")) {
         if (!isAdmin(req)) return json(res, 403, { error: "unauthorized" });
         if (req.method !== "POST") return json(res, 405, { error: "POST only" });
-        const body = (await readBody(req)) as { sol?: number };
+        const body = (await readBody(req)) as { sol?: number; force?: boolean };
         const sol = Number(body.sol);
         if (p === "/api/admin/fees" && sol > 0) {
-          treasury.recordCreatorFees(sol);
+          // manual fallback; auto-claim already credits fees, so don't double count
+          if (autoClaimLive() && body.force !== true) {
+            return json(res, 409, { error: "auto-claim is live and credits creator fees itself; send force:true to add fees it can't see" });
+          }
+          treasury.recordCreatorFees(sol, { source: "manual" });
           return json(res, 200, { ok: true, treasury: db.treasury });
         }
         if (p === "/api/admin/deposit" && sol > 0) {
@@ -128,15 +160,25 @@ export function startServer(callouts: CalloutTracker, airdrop?: AirdropEngine): 
       }
 
       // --- static site ---
-      const rel = p === "/" ? "index.html" : p.slice(1);
-      const file = path.resolve(SITE_DIR, rel);
-      if (file.startsWith(SITE_DIR) && fs.existsSync(file) && fs.statSync(file).isFile()) {
-        res.writeHead(200, {
-          "content-type": MIME[path.extname(file)] ?? "application/octet-stream",
-        });
-        return void res.end(fs.readFileSync(file));
+      const rel = decodeURIComponent(p === "/" ? "index.html" : p.slice(1));
+      for (const candidate of [rel, `${rel}.html`, path.join(rel, "index.html")]) {
+        const file = path.resolve(SITE_DIR, candidate);
+        if (file.startsWith(SITE_DIR + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+          res.writeHead(200, {
+            "content-type": MIME[path.extname(file)] ?? "application/octet-stream",
+            "cache-control": candidate.startsWith("_next/static/") ? "public, max-age=31536000, immutable" : "no-cache",
+          });
+          return void res.end(fs.readFileSync(file));
+        }
       }
-      json(res, 404, { error: "not found" });
+      if (p.startsWith("/api/")) return json(res, 404, { error: "not found" });
+      const notFound = path.join(SITE_DIR, "404.html");
+      if (fs.existsSync(notFound)) {
+        res.writeHead(404, { "content-type": MIME[".html"] });
+        return void res.end(fs.readFileSync(notFound));
+      }
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end(fs.existsSync(SITE_DIR) ? "not found" : "dashboard not built: run `npm run build:dashboard`");
     } catch (err) {
       log.error("api", "request failed", err);
       json(res, 500, { error: "internal error" });

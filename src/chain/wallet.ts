@@ -18,24 +18,42 @@ export function getConnection(): Connection {
   return connection;
 }
 
-export function getKeypair(): Keypair | null {
-  if (keypair !== undefined) return keypair;
-  const secret = config.chain.walletSecretKey;
-  if (!secret) {
-    keypair = null;
-    return keypair;
-  }
+/** Tests / simulations only: route every on-chain call to a stand-in. */
+export function setConnection(conn: Connection): void {
+  connection = conn;
+}
+
+function parseSecret(secret: string, label: string): Keypair | null {
+  if (!secret) return null;
   try {
     const bytes = secret.trim().startsWith("[")
       ? Uint8Array.from(JSON.parse(secret) as number[])
       : bs58.decode(secret.trim());
-    keypair = Keypair.fromSecretKey(bytes);
-    log.info("wallet", `operator wallet loaded: ${keypair.publicKey.toBase58()}`);
-  } catch (err) {
-    log.error("wallet", "failed to parse WALLET_SECRET_KEY", err);
-    keypair = null;
+    const kp = Keypair.fromSecretKey(bytes);
+    log.info("wallet", `${label} wallet loaded: ${kp.publicKey.toBase58()}`);
+    return kp;
+  } catch {
+    // never echo the secret or the parse error (it can contain key bytes)
+    log.error("wallet", `failed to parse the ${label} secret key`);
+    return null;
   }
+}
+
+export function getKeypair(): Keypair | null {
+  if (keypair !== undefined) return keypair;
+  keypair = parseSecret(config.chain.walletSecretKey, "operator");
   return keypair;
+}
+
+let creatorKeypair: Keypair | null | undefined;
+
+/** Creator wallet for fee claims: CREATOR_SECRET_KEY, else the operator wallet. */
+export function getCreatorKeypair(): Keypair | null {
+  if (creatorKeypair !== undefined) return creatorKeypair;
+  creatorKeypair = config.claims.creatorSecretKey
+    ? parseSecret(config.claims.creatorSecretKey, "creator")
+    : getKeypair();
+  return creatorKeypair;
 }
 
 export function walletConfigured(): boolean {
