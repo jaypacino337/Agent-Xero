@@ -14,6 +14,7 @@ import { startVolumeDetector } from "./signals/volume.js";
 import { db } from "./store/db.js";
 import { AirdropEngine } from "./treasury/airdrop.js";
 import { BuybackEngine } from "./treasury/buyback.js";
+import { FeeClaimer, autoClaimLive } from "./treasury/fees.js";
 import { treasury } from "./treasury/treasury.js";
 import { log } from "./util/logger.js";
 
@@ -34,6 +35,7 @@ const trader = new Trader();
 const callouts = new CalloutTracker();
 const buyback = new BuybackEngine();
 const airdrop = new AirdropEngine();
+const claimer = new FeeClaimer();
 
 // wire trader -> treasury / callouts / social
 trader.on("entry", (position) => {
@@ -84,7 +86,13 @@ const telegram = new TelegramIngest({
   },
   halt: () => risk.halt(),
   resume: () => risk.resume(),
-  recordCreatorFees: (sol) => treasury.recordCreatorFees(sol),
+  recordCreatorFees: (sol, force) => {
+    if (autoClaimLive() && !force) {
+      return "auto-claim is live and already credits creator fees — send `/fees <sol> force` only for fees it can't see";
+    }
+    treasury.recordCreatorFees(sol, { source: "manual" });
+    return `recorded ${sol} SOL creator fees into treasury (manual)`;
+  },
   recordDeposit: (sol) => treasury.recordDeposit(sol),
 });
 
@@ -98,6 +106,7 @@ trader.start();
 callouts.start();
 buyback.start();
 airdrop.start();
+claimer.start();
 telegram.start();
 engage.start();
 startServer(callouts, airdrop);

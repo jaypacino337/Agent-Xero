@@ -4,3 +4,7 @@ data
 .env
 .git
 *.log
+dashboard/node_modules
+dashboard/.next
+dashboard/out
+qa

@@ -106,10 +106,17 @@ export const config = {
     calloutRewardsPct: num("CALLOUT_REWARDS_AIRDROP_PCT", 100),
     /** minimum accumulated SOL before an airdrop executes */
     minSol: num("AIRDROP_MIN_SOL", 0.5),
-    /** "linear" = pro-rata by holdings; "random" = holdings-weighted lottery */
-    mode: (str("AIRDROP_MODE", "random") === "linear" ? "linear" : "random") as
+    /** "linear" = pro-rata by holdings; "random" = holdings-weighted lottery; "equal" = same amount each */
+    mode: (["linear", "equal"].includes(str("AIRDROP_MODE", "random")) ? str("AIRDROP_MODE") : "random") as
       | "linear"
-      | "random",
+      | "random"
+      | "equal",
+    /** linear mode: max share of one drop per wallet in bps (10000 = no cap, 400 = 4%) */
+    capBps: num("AIRDROP_CAP_BPS", 10_000),
+    /** payouts below this are dropped (not worth the fee) and re-split */
+    minPayoutSol: num("AIRDROP_MIN_PAYOUT_SOL", 0.001),
+    /** SOL transfers per transaction */
+    batchSize: num("AIRDROP_BATCH_SIZE", 10),
     /** random mode: number of winners splitting the pool equally */
     randomWinners: num("AIRDROP_RANDOM_WINNERS", 10),
     /** ignore dust wallets below this share of supply (e.g. 0.05 = 0.05%) */
@@ -117,6 +124,26 @@ export const config = {
     /** wallets never eligible (LPs, exchange wallets, team) — comma separated */
     exclude: list("AIRDROP_EXCLUDE"),
     maxRecipientsPerDrop: num("AIRDROP_MAX_RECIPIENTS", 200),
+  },
+
+  /**
+   * Automatic pump.fun creator-fee claims (memcoinz pump-claim). Live mode
+   * only sends the claim; paper mode just reads what's claimable.
+   */
+  claims: {
+    autoClaim: bool("AUTO_CLAIM", true),
+    intervalMin: num("CLAIM_INTERVAL_MIN", 30),
+    /** skip claims smaller than this (SOL) */
+    minSol: num("CLAIM_MIN_SOL", 0.01),
+    /** creator wallet secret (base58 / JSON array); defaults to WALLET_SECRET_KEY */
+    creatorSecretKey: str("CREATOR_SECRET_KEY"),
+    /** read-only: creator address for showing claimable fees without a key */
+    creatorPublicKey: str("CREATOR_PUBLIC_KEY"),
+  },
+
+  /** Guest-list seats (memcoinz seats): only seated wallets receive drops */
+  seats: {
+    url: str("SEATS_URL"),
   },
 
   chain: {

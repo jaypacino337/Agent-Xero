@@ -15,7 +15,8 @@ import { tracker } from "./bus.js";
  *       /status          — quick engine status
  *       /halt            — stop opening new positions
  *       /resume          — resume trading
- *       /fees <sol>      — record claimed pump.fun creator fees into treasury
+ *       /fees <sol>      — manually record pump.fun creator fees (fallback when
+ *                          auto-claim is off; add "force" while it's live)
  *       /deposit <sol>   — record a treasury deposit (trading capital)
  */
 const BASE58_RE = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
@@ -38,7 +39,8 @@ export interface TelegramHooks {
   getStatus: () => string;
   halt: () => void;
   resume: () => void;
-  recordCreatorFees: (sol: number) => void;
+  /** returns the reply text (refuses when auto-claim is live, unless forced) */
+  recordCreatorFees: (sol: number, force: boolean) => string;
   recordDeposit: (sol: number) => void;
 }
 
@@ -130,7 +132,7 @@ export class TelegramIngest {
   }
 
   private async handleCommand(text: string, chatId: string): Promise<void> {
-    const [cmd, arg] = text.trim().split(/\s+/);
+    const [cmd, arg, flag] = text.trim().split(/\s+/);
     let reply = "unknown command";
     switch (cmd) {
       case "/status":
@@ -147,9 +149,8 @@ export class TelegramIngest {
       case "/fees": {
         const sol = Number(arg);
         if (Number.isFinite(sol) && sol > 0) {
-          this.hooks.recordCreatorFees(sol);
-          reply = `recorded ${sol} SOL creator fees into treasury`;
-        } else reply = "usage: /fees <sol>";
+          reply = this.hooks.recordCreatorFees(sol, flag === "force");
+        } else reply = "usage: /fees <sol> [force]";
         break;
       }
       case "/deposit": {

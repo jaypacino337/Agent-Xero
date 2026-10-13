@@ -1,31 +1,49 @@
-import {
-  LAMPORTS_PER_SOL,
-  PublicKey,
-  SystemProgram,
-  Transaction,
-  sendAndConfirmTransaction,
-} from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { config } from "../config.js";
-import { snapshotHolders, type Holder } from "../chain/holders.js";
+import { takeSnapshot, type HolderSnapshot } from "../chain/holders.js";
+import { lamports, lamportsToSol } from "../chain/solana.js";
 import { getConnection, getKeypair } from "../chain/wallet.js";
-import { db } from "../store/db.js";
+import { LEDGER_DIR, db } from "../store/db.js";
 import type { AirdropEvent } from "../types.js";
-import { log, shortId } from "../util/logger.js";
+import { log } from "../util/logger.js";
+import { buildPlan, executePlan, loadPlan, savePlan, type AirdropPlan, type DropMode } from "./payout.js";
 
 /**
  * Holder airdrop engine — the second arm of the flywheel next to burns.
  *
  * The pool accrues from callout rewards (default 100% of them) and a share
  * of trading profits. When it crosses AIRDROP_MIN_SOL:
- *   - snapshot eligible $XERO holders (dust + LPs + exclusions filtered)
- *   - "linear": pro-rata by holdings; "random": holdings-weighted lottery,
- *     N winners split the pool equally
- *   - paper mode records the drop; live mode sends SOL from the operator
- *     wallet, batched 8 transfers per transaction
+ *   1. snapshot eligible $XERO holders (bigint, Token-2022 aware, PDAs/LPs/
+ *      bonding curve/exclusions/dust filtered; seated wallets only when
+ *      SEATS_URL is set)
+ *   2. build a plan: "linear" = pro-rata (optional AIRDROP_CAP_BPS),
+ *      "random" = holdings-weighted lottery seeded with the snapshot slot,
+ *      "equal" = same amount each; rent-aware for brand-new wallets
+ *   3. freeze it to DATA_DIR/ledgers/<id>.plan.json and move exactly the
+ *      allocated SOL out of the pool — on disk — before any transfer
+ *   4. pay in batches; each signature is fsync'd to the plan's ledger before
+ *      broadcast. A failed or unconfirmed batch stays in the plan and is
+ *      reconciled against the chain on the next tick or after a restart, so
+ *      nobody is paid twice and nothing is silently dropped.
+ * Paper mode runs the same plan + ledger path with simulated signatures.
+ * Payout code: treasury/payout.ts (ported from memcoinz airdrop).
  */
+export interface AirdropDeps {
+  /** override for tests / the e2e sim */
+  snapshot?: (mint: string) => Promise<HolderSnapshot>;
+}
+
+const MODE: Record<typeof config.airdrop.mode, DropMode> = {
+  linear: "prorata",
+  random: "lottery",
+  equal: "equal",
+};
+
 export class AirdropEngine {
   private running = false;
   onDrop?: (event: AirdropEvent) => void;
+
+  constructor(private deps: AirdropDeps = {}) {}
 
   start(): void {
     if (!config.airdrop.enabled) {
@@ -35,23 +53,24 @@ export class AirdropEngine {
     setInterval(() => void this.tick(), 90_000).unref();
     log.info(
       "airdrop",
-      `engine armed (${config.airdrop.mode} mode, min ${config.airdrop.minSol} SOL, ${config.airdrop.profitPct}% of profits + ${config.airdrop.calloutRewardsPct}% of callout rewards)`,
+      `engine armed (${config.airdrop.mode} mode, min ${config.airdrop.minSol} SOL, ${config.airdrop.profitPct}% of profits + ${config.airdrop.calloutRewardsPct}% of callout rewards${config.seats.url ? ", seated wallets only" : ""})`,
     );
+    if (db.jobs.airdrop) void this.tick(); // resume a plan a restart interrupted
   }
 
-  private async tick(): Promise<void> {
-    if (db.treasury.pendingAirdropSol < config.airdrop.minSol) return;
+  async tick(): Promise<void> {
+    if (!db.jobs.airdrop && db.treasury.pendingAirdropSol < config.airdrop.minSol) return;
     await this.runOnce();
   }
 
-  /** Drop whatever is pooled right now (also exposed via the admin API). */
+  /** Resume the active plan, or drop whatever is pooled right now (also exposed via the admin API). */
   async runOnce(): Promise<boolean> {
     if (this.running) return false;
-    if (!config.xero.mint || db.treasury.pendingAirdropSol <= 0) return false;
     this.running = true;
     try {
-      await this.executeDrop(db.treasury.pendingAirdropSol);
-      return true;
+      if (db.jobs.airdrop) return await this.resume();
+      if (!config.xero.mint || db.treasury.pendingAirdropSol <= 0) return false;
+      return await this.createAndRun();
     } catch (err) {
       log.error("airdrop", "drop failed", err);
       return false;
@@ -60,90 +79,120 @@ export class AirdropEngine {
     }
   }
 
-  private pickRecipients(holders: Holder[], pool: number): { wallet: string; sol: number }[] {
-    if (holders.length === 0) return [];
-    if (config.airdrop.mode === "linear") {
-      const total = holders.reduce((s, h) => s + h.amount, 0);
-      return holders
-        .slice(0, config.airdrop.maxRecipientsPerDrop)
-        .map((h) => ({ wallet: h.owner, sol: (h.amount / total) * pool }))
-        .filter((r) => r.sol >= 0.001);
+  private async createAndRun(): Promise<boolean> {
+    const payer = getKeypair();
+    if (!config.paperTrading && !payer) {
+      log.warn("airdrop", "live mode but WALLET_SECRET_KEY not set — keeping pool");
+      return false;
     }
-    // random: holdings-weighted lottery, winners split the pool equally
-    const winners = new Set<string>();
-    const n = Math.min(config.airdrop.randomWinners, holders.length);
-    const totalWeight = holders.reduce((s, h) => s + h.amount, 0);
-    let guard = 0;
-    while (winners.size < n && guard++ < 10_000) {
-      let r = Math.random() * totalWeight;
-      for (const h of holders) {
-        r -= h.amount;
-        if (r <= 0) {
-          winners.add(h.owner);
-          break;
-        }
-      }
+    const snapshot = this.deps.snapshot
+      ? await this.deps.snapshot(config.xero.mint)
+      : await takeSnapshot(getConnection(), {
+          mint: new PublicKey(config.xero.mint),
+          minHoldingPct: config.airdrop.minHoldingPct,
+          exclude: config.airdrop.exclude,
+          heliusApiKey: config.chain.heliusApiKey || undefined,
+          seatsUrl: config.seats.url || undefined,
+        });
+    if (snapshot.holders.length === 0) {
+      log.warn("airdrop", "no eligible holders found, keeping pool");
+      return false;
     }
-    const share = pool / winners.size;
-    return [...winners].map((wallet) => ({ wallet, sol: share }));
+
+    const opts = {
+      snapshot,
+      potLamports: lamports(db.treasury.pendingAirdropSol),
+      mode: MODE[config.airdrop.mode],
+      capBps: config.airdrop.capBps,
+      winners: config.airdrop.randomWinners,
+      maxRecipients: config.airdrop.maxRecipientsPerDrop,
+      minPayoutLamports: lamports(config.airdrop.minPayoutSol),
+      payer: payer?.publicKey.toBase58(),
+      paper: config.paperTrading,
+    };
+    // rent check reads the chain; paper plans skip it (nothing is sent)
+    const plan = await buildPlan({ ...opts, conn: config.paperTrading ? undefined : getConnection() });
+    if (plan.payouts.length === 0) {
+      log.warn("airdrop", "pool too small for any payout above the minimum, keeping pool");
+      return false;
+    }
+    if (plan.capRelaxed) log.warn("airdrop", "cap relaxed: too few holders for it to absorb the pot");
+    if (plan.droppedForRent) log.info("airdrop", `${plan.droppedForRent} empty wallets below rent-exemption dropped, pot re-split`);
+
+    // freeze + commit: plan on disk and SOL out of the pool BEFORE any transfer
+    savePlan(LEDGER_DIR, plan);
+    const sol = lamportsToSol(BigInt(plan.allocatedLamports));
+    db.treasury.pendingAirdropSol = Math.max(0, db.treasury.pendingAirdropSol - sol);
+    db.treasury.inFlightAirdropSol += sol;
+    db.jobs.airdrop = { id: plan.id, sol, startedAt: Date.now() };
+    db.commit("treasury", "jobs");
+    log.info("airdrop", `plan ${plan.id} frozen: ${plan.payouts.length} recipients, ${sol.toFixed(4)} SOL`);
+    return this.execute(plan);
   }
 
-  private async executeDrop(pool: number): Promise<void> {
-    const holders = await snapshotHolders(config.xero.mint);
-    if (holders.length === 0) {
-      log.warn("airdrop", "no eligible holders found, keeping pool");
-      return;
+  private async resume(): Promise<boolean> {
+    const job = db.jobs.airdrop!;
+    const plan = loadPlan(LEDGER_DIR, job.id);
+    if (!plan) {
+      // committed but the plan file is gone (volume wiped?): nothing can have been sent from it
+      log.error("airdrop", `plan ${job.id} missing on disk — returning ${job.sol} SOL to the pool`);
+      db.treasury.inFlightAirdropSol = Math.max(0, db.treasury.inFlightAirdropSol - job.sol);
+      db.treasury.pendingAirdropSol += job.sol;
+      db.jobs.airdrop = undefined;
+      db.commit("treasury", "jobs");
+      return false;
     }
-    const recipients = this.pickRecipients(holders, pool);
-    if (recipients.length === 0) return;
+    return this.execute(plan);
+  }
 
-    const txs: string[] = [];
-    if (!config.paperTrading) {
-      const keypair = getKeypair();
-      if (!keypair) {
-        log.warn("airdrop", "live mode but WALLET_SECRET_KEY not set — keeping pool");
-        return;
-      }
-      const conn = getConnection();
-      for (let i = 0; i < recipients.length; i += 8) {
-        const batch = recipients.slice(i, i + 8);
-        const tx = new Transaction();
-        for (const r of batch) {
-          tx.add(
-            SystemProgram.transfer({
-              fromPubkey: keypair.publicKey,
-              toPubkey: new PublicKey(r.wallet),
-              lamports: Math.floor(r.sol * LAMPORTS_PER_SOL),
-            }),
-          );
-        }
-        const sig = await sendAndConfirmTransaction(conn, tx, [keypair]);
-        txs.push(sig);
-        log.info("airdrop", `batch ${i / 8 + 1} sent: ${sig}`);
-      }
+  private async execute(plan: AirdropPlan): Promise<boolean> {
+    const res = await executePlan({
+      plan,
+      dir: LEDGER_DIR,
+      conn: plan.paper ? undefined : getConnection(),
+      payer: getKeypair(),
+      paper: plan.paper,
+      batchSize: config.airdrop.batchSize,
+      log: (m) => log.info("airdrop", m),
+    });
+    if (res.remaining > 0) {
+      log.warn(
+        "airdrop",
+        `plan ${plan.id}: ${plan.payouts.length - res.remaining}/${plan.payouts.length} paid, ${res.undecided} awaiting confirmation — will resume`,
+      );
+      return false;
     }
+    this.finalize(plan, res.signatures);
+    return true;
+  }
 
+  private finalize(plan: AirdropPlan, txs: string[]): void {
+    const job = db.jobs.airdrop!;
     const event: AirdropEvent = {
-      id: shortId(),
+      id: plan.id,
       at: Date.now(),
-      totalSol: pool,
+      totalSol: job.sol,
       mode: config.airdrop.mode,
-      recipientCount: recipients.length,
-      recipients: recipients
-        .slice()
+      recipientCount: plan.payouts.length,
+      recipients: plan.payouts
+        .map((p) => ({ wallet: p.owner, sol: lamportsToSol(BigInt(p.lamports)) }))
         .sort((a, b) => b.sol - a.sol)
         .slice(0, 25),
       txs,
+      planId: plan.id,
+      slot: plan.slot,
+      seated: plan.seated,
       fundedBy: "callout-rewards",
-      paper: config.paperTrading,
+      paper: plan.paper,
     };
     db.airdrops.push(event);
-    db.treasury.pendingAirdropSol -= pool;
-    db.treasury.totalAirdropSol += pool;
-    db.markDirty("airdrops", "treasury");
+    db.treasury.inFlightAirdropSol = Math.max(0, db.treasury.inFlightAirdropSol - job.sol);
+    db.treasury.totalAirdropSol += job.sol;
+    db.jobs.airdrop = undefined;
+    db.commit("airdrops", "treasury", "jobs");
     log.info(
       "airdrop",
-      `🎁 dropped ${pool.toFixed(3)} SOL to ${recipients.length} holders (${config.airdrop.mode})`,
+      `🎁 dropped ${job.sol.toFixed(3)} SOL to ${plan.payouts.length} holders (${config.airdrop.mode})`,
     );
     this.onDrop?.(event);
   }

@@ -4,6 +4,7 @@ import type {
   AirdropEvent,
   BurnEvent,
   Callout,
+  ClaimEvent,
   Position,
   TradeEvent,
   TreasuryState,
@@ -11,7 +12,7 @@ import type {
 import { log } from "../util/logger.js";
 
 // DATA_DIR env overrides (Railway: attach a volume and set DATA_DIR=/data)
-const DATA_DIR = path.resolve(process.env.DATA_DIR ?? path.join(process.cwd(), "data"));
+export const DATA_DIR = path.resolve(process.env.DATA_DIR ?? path.join(process.cwd(), "data"));
 
 interface DbShape {
   treasury: TreasuryState;
@@ -20,7 +21,16 @@ interface DbShape {
   burns: BurnEvent[];
   callouts: Callout[];
   airdrops: AirdropEvent[];
+  claims: ClaimEvent[];
+  /** jobs that must survive a restart: the buyback/airdrop currently executing */
+  jobs: {
+    buyback?: { id: string; sol: number; startedAt: number };
+    airdrop?: { id: string; sol: number; startedAt: number };
+  };
 }
+
+/** crash-safe ledgers + frozen airdrop plans live next to the JSON collections */
+export const LEDGER_DIR = path.join(DATA_DIR, "ledgers");
 
 const defaults: DbShape = {
   treasury: {
@@ -33,12 +43,19 @@ const defaults: DbShape = {
     totalBuybackSol: 0,
     totalXeroBurned: 0,
     totalAirdropSol: 0,
+    inFlightBuybackSol: 0,
+    inFlightAirdropSol: 0,
+    totalAutoClaimedSol: 0,
+    claimableSol: null,
+    claimableAt: null,
   },
   positions: [],
   trades: [],
   burns: [],
   callouts: [],
   airdrops: [],
+  claims: [],
+  jobs: {},
 };
 
 /**
@@ -52,7 +69,7 @@ class Db {
 
   constructor() {
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    this.state = { ...defaults };
+    this.state = structuredClone(defaults);
     for (const key of Object.keys(defaults) as (keyof DbShape)[]) {
       const file = this.fileFor(key);
       if (fs.existsSync(file)) {
@@ -91,6 +108,12 @@ class Db {
   get airdrops() {
     return this.state.airdrops;
   }
+  get claims() {
+    return this.state.claims;
+  }
+  get jobs() {
+    return this.state.jobs;
+  }
 
   markDirty(...keys: (keyof DbShape)[]) {
     for (const k of keys) this.dirty.add(k);
@@ -105,10 +128,25 @@ class Db {
     for (const key of this.dirty) {
       const file = this.fileFor(key);
       const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.state[key], null, 2));
+      const fd = fs.openSync(tmp, "w");
+      try {
+        fs.writeSync(fd, JSON.stringify(this.state[key], null, 2));
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
       fs.renameSync(tmp, file);
     }
     this.dirty.clear();
+  }
+
+  /**
+   * Mark + write to disk immediately. Used before any broadcast that spends
+   * pooled SOL, so a crash can never leave the pool un-decremented.
+   */
+  commit(...keys: (keyof DbShape)[]) {
+    this.markDirty(...keys);
+    this.flush();
   }
 }
 

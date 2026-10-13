@@ -27,7 +27,13 @@ Every trade, buyback and burn is written to a public ledger and served on the si
 
 **Strategy** — catch runners early: only enter while market cap is **below `ENTRY_MAX_MC_USD` (default $10k)** and the composite score clears the bar. Scale out **`TAKE_PROFIT_SELL_PCT`** when the token crosses **`TARGET_MC_USD` (default $100k)**, ride the rest with a trailing stop, hard stop-loss below entry. (Nobody can literally know in advance which sub-$10k token hits $100k — the scorer is the proxy, and every knob is tunable in `.env`.)
 
-**Treasury, burns & holder airdrops** — creator fees fund trading. Realized profits split between $XERO buybacks (default 70%) and a **holder airdrop pool** (default 30%); **callout rewards route 100% to airdrops** by default. Buybacks are burned on-chain (SPL burn instruction when `WALLET_SECRET_KEY` is set). Airdrops snapshot eligible holders (Helius or raw RPC, dust/LP/exclusions filtered) and pay them either **random** (holdings-weighted lottery, N winners split the pool) or **linear** (pro-rata). Every burn and every drop is in the public ledger — hold $XERO to be in every draw.
+**Treasury, burns & holder airdrops** — creator fees fund trading and are **claimed automatically** through PumpPortal (`AUTO_CLAIM`, live mode; paper mode shows what's claimable). Realized profits split between $XERO buybacks (default 70%) and a **holder airdrop pool** (default 30%); **callout rewards route 100% to airdrops** by default.
+
+- **Buyback & burn** burns **exactly the tokens that buy delivered** (balance delta, capped by the buy tx's own token delta) with `burnChecked` on the detected token program (SPL or Token-2022). Tokens the wallet already held are never touched.
+- **Airdrops** snapshot eligible holders (bigint, Token-2022 aware; bonding curve, PDAs/LPs, burn address, exclusions and dust filtered; with `SEATS_URL`, seated wallets only), then pay **random** (holdings-weighted lottery seeded with the snapshot slot, so a draw is reproducible), **linear** (pro-rata, optional `AIRDROP_CAP_BPS`) or **equal**. Each drop is a **frozen plan** on disk; every batch signature is fsync'd to a ledger before broadcast and reconciled on-chain after a crash. Nobody is paid twice and a failed batch is retried, not lost. Brand-new wallets below rent-exemption are dropped and the pot re-split; the payer's balance is checked before the first transfer.
+- Pooled SOL leaves the pool **on disk before** any buyback/drop transaction is broadcast; an interrupted job resumes on restart (or is refunded to the pool if its tx provably never landed).
+
+The treasury code is ported from the memcoinz skills (`buyback-burn`, `airdrop`, `pump-claim`, `snapshot`, `seats`); each file's header names its source.
 
 **Aggressiveness** — `AGGRESSIVENESS=chill|normal|degen` presets how often Xero pulls the trigger (score bar, position slots, volume thresholds). `degen` = trade a lot; explicit env values always override the preset.
 
@@ -38,9 +44,12 @@ Every trade, buyback and burn is written to a public ledger and served on the si
 ```bash
 npm install
 cp .env.example .env   # fill in what you have; everything is optional in paper mode
+npm run build:dashboard   # static Next.js export → dashboard/out (served by the agent)
 npm run dev
-# site + ledger: http://localhost:3000
+# dashboard + API: http://localhost:3000
 ```
+
+Checks: `npm run typecheck && npm test && npm run sim` (or `npm run check`). Tests run the burn/airdrop/claim code against an in-memory fake chain, including crash-and-resume cases. Dashboard dev: `cd dashboard && NEXT_PUBLIC_API_BASE=http://localhost:3000 npx next dev -p 3001`.
 
 **Paper mode is the default** (`PAPER_TRADING=true`). The full pipeline runs against live pump.fun data — real signals, simulated fills with slippage, no transactions — so you can watch it trade and tune thresholds before going live. Paper trades are marked `(paper)` everywhere.
 
@@ -50,16 +59,20 @@ Out of the box (no keys at all) you get: pump.fun scanning, volume signals, pape
 |---|---|
 | `SMART_WALLETS` | wallet-confluence signals (the highest-weight source — curate this list) |
 | `TELEGRAM_BOT_TOKEN` + chat IDs | telegram call ingestion + admin commands (`/status /halt /resume /fees /deposit`) |
+| `CREATOR_PUBLIC_KEY` | dashboard shows claimable creator fees (read-only) |
+| `RPC_URL` / `HELIUS_API_KEY` | holder snapshots (the public RPC refuses whole-mint scans) |
+| `SEATS_URL` | guest-list seats: only seated wallets get drops (memcoinz seats site) |
 | `ANTHROPIC_API_KEY` | Claude-generated posts & replies (`PERSONA_MODEL=claude-fable-5`) |
 | `X_*` credentials + `X_ENABLED=true` | real posting + mention engagement |
-| `PUMPPORTAL_API_KEY` + `PAPER_TRADING=false` | live execution |
+| `PUMPPORTAL_API_KEY` + `PAPER_TRADING=false` | live trade execution |
+| `WALLET_SECRET_KEY` + `PAPER_TRADING=false` | live buyback-burns, airdrops and fee claims (signed locally via PumpPortal trade-local) |
 
 ## Deploy on Railway
 
-The repo ships a `Dockerfile` + `railway.json` (healthcheck on `/api/stats`, restart on failure). Railway auto-detects both.
+The repo ships a `Dockerfile` (builds the dashboard, then the agent) + `railway.json` (healthcheck on `/api/health`, restart on failure). Railway auto-detects both.
 
 1. Railway → **New Project → Deploy from GitHub repo** → pick this repo/branch.
-2. **Attach a volume** to the service, mount path `/data` (the Dockerfile sets `DATA_DIR=/data`). Without it, the ledger resets on every deploy.
+2. **Attach a volume** to the service, mount path `/data` (the Dockerfile sets `DATA_DIR=/data`). **Required before going live:** the volume holds the treasury ledger, frozen airdrop plans and the signature ledgers that prevent double-pays across restarts (`/data/ledgers`). Without it, every deploy forgets in-flight jobs.
 3. Set variables (Service → Variables). Minimum useful set:
    - `PAPER_TRADING=true` (keep it true until the paper ledger earns your trust)
    - `ADMIN_TOKEN=<long random string>` — required to use the admin API remotely, e.g.
@@ -76,12 +89,12 @@ Vercel is not suitable — the bot is a long-running process with persistent web
 1. Run paper mode for days, not hours. Tune `MIN_SCORE_TO_BUY`, volume thresholds and the smart-wallet list until the paper ledger looks like something you'd fund.
 2. Fund a **dedicated** PumpPortal Lightning wallet with only what the treasury should trade. Record deposits with `/deposit` so the ledger matches the wallet.
 3. Set `PAPER_TRADING=false`. Risk rails: `MAX_OPEN_POSITIONS`, `DAILY_LOSS_LIMIT_SOL` (halts entries for the day), `/halt` kill switch.
-4. **Live burns & airdrops:** set `WALLET_SECRET_KEY` (the PumpPortal wallet's key, or any operator wallet holding the bought $XERO and airdrop SOL) and both run fully on-chain — buybacks are burned with the SPL burn instruction (supply actually decreases) and airdrop SOL is sent in batched transfers. Without the key, buybacks record with `burnTx` empty for manual burning and airdrops stay pooled. Use a paid RPC (`RPC_URL`) for live sends; add `HELIUS_API_KEY` for fast holder snapshots.
-5. Creator-fee claims and pump.fun fee-share/callout rewards arrive on-chain outside this bot — record them with `/fees <sol>` and `POST /api/admin/callout-profit {"sol": n}` so they enter the ledger and get split into the airdrop/buyback pools.
+4. **Live burns & airdrops:** set `WALLET_SECRET_KEY` (the operator wallet that holds the buyback SOL and airdrop SOL). Buybacks buy through PumpPortal trade-local (signed locally) and burn exactly what was bought; drops are paid from the same wallet. Without the key, buybacks and drops stay pooled (nothing is sent). Use a paid RPC (`RPC_URL`); add `HELIUS_API_KEY` for fast holder snapshots.
+5. **Creator fees** are claimed automatically every `CLAIM_INTERVAL_MIN` (default 30) once ≥ `CLAIM_MIN_SOL`, from `CREATOR_SECRET_KEY` (defaults to `WALLET_SECRET_KEY`; keep them the same wallet so claimed SOL is spendable by the treasury). The amount credited is read from the claim tx. Manual entry (`/fees <sol>`, `POST /api/admin/fees`) stays as a fallback; while auto-claim is live it needs `force` (`/fees 1.2 force`, `{"sol":1.2,"force":true}`) so nothing is counted twice. Callout rewards still go through `POST /api/admin/callout-profit {"sol": n}`.
 
 ## API
 
-`GET /api/stats · /api/positions · /api/trades · /api/burns · /api/callouts · /api/airdrops` — public, consumed by the site.
+`GET /api/stats · /api/positions · /api/trades · /api/burns · /api/callouts · /api/airdrops · /api/claims · /api/links · /api/health` — public, consumed by the dashboard.
 `POST /api/admin/{fees|deposit|callout-profit|halt|resume}` — localhost only.
 
 ## Layout
@@ -90,12 +103,15 @@ Vercel is not suitable — the bot is a long-running process with persistent web
 src/
   signals/    pumpfun scanner, smart-wallet watcher, volume detector, telegram ingest
   engine/     scorer (signal confluence → 0-100), risk gate, trader (entries/exits)
-  treasury/   ledger accounting, buyback & burn engine
+  chain/      Solana plumbing (ported memcoinz solana-core), operator wallet, holder snapshot
+  treasury/   accounting; buyback+burn (burn.ts), airdrop plans+payouts (payout.ts, allocate.ts),
+              creator-fee claims (claim.ts, fees.ts)
   social/     X client (zero-dep OAuth1a), Claude persona, mention engagement, callout tracker
   market/     SOL/USD feed
-  server/     site + JSON API
-  store/      JSON-file persistence (./data)
-site/         the public dashboard
+  server/     dashboard + JSON API
+  store/      JSON-file persistence (./data, ledgers in ./data/ledgers)
+dashboard/    Next.js "cyber terminal" dashboard (memcoinz site-starter), static export
+test/         burn-delta, airdrop-resume, allocation and live-engine tests (fake chain, no network)
 ```
 
 Zero runtime dependencies beyond `@anthropic-ai/sdk` (Node ≥ 22: built-in `fetch` + `WebSocket`).

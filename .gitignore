@@ -3,3 +3,9 @@ dist/
 data/
 .env
 *.log
+dashboard/.next/
+dashboard/out/
+dashboard/node_modules/
+dashboard/next-env.d.ts
+dashboard/tsconfig.tsbuildinfo
+qa/

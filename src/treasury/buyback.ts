@@ -1,33 +1,35 @@
-import {
-  PublicKey,
-  Transaction,
-  sendAndConfirmTransaction,
-} from "@solana/web3.js";
-import {
-  createBurnInstruction,
-  getAssociatedTokenAddressSync,
-} from "@solana/spl-token";
+import path from "node:path";
+import { PublicKey } from "@solana/web3.js";
 import { config } from "../config.js";
-import { executeTrade } from "../execution/pumpportal.js";
+import { Ledger, lamports, lamportsToSol, toUi } from "../chain/solana.js";
 import { getConnection, getKeypair } from "../chain/wallet.js";
 import { tracker } from "../signals/bus.js";
-import { db } from "../store/db.js";
+import { LEDGER_DIR, db } from "../store/db.js";
 import type { BurnEvent } from "../types.js";
 import { log, shortId } from "../util/logger.js";
+import { buybackAndBurn, resumeBuyback, type BuybackJob, type BuybackOutcome } from "./burn.js";
 
 /**
  * Buyback & burn engine for $XERO.
  *
  * Whenever the pending pool crosses BUYBACK_MIN_SOL, the accumulated SOL is
  * used to market-buy $XERO. Paper mode simulates the fill at the last
- * observed price. Live mode buys via PumpPortal, then — when
- * WALLET_SECRET_KEY is configured — burns the wallet's entire $XERO balance
- * on-chain with the SPL burn instruction (supply actually decreases; no
- * incinerator transfer needed). Without a wallet key the buyback is recorded
- * with burnTx empty for a manual burn.
+ * observed price. Live mode (needs WALLET_SECRET_KEY) buys through
+ * PumpPortal trade-local and burns EXACTLY the tokens that buy delivered
+ * (treasury/burn.ts, ported from memcoinz buyback-burn) — never tokens the
+ * wallet already held.
+ *
+ * Crash safety: the SOL leaves the pending pool (and is written to disk)
+ * before the buy is broadcast, the job id is persisted in db.jobs, and every
+ * signature hits the ledger before broadcast. On the next tick/restart an
+ * unfinished job is resumed: burned if the buy landed, refunded to the pool
+ * if it provably didn't. The same SOL is never spent twice.
  */
+export const BUYBACK_LEDGER = path.join(LEDGER_DIR, "buybacks.jsonl");
+
 export class BuybackEngine {
   private running = false;
+  private warnedNoKey = false;
   onBurn?: (event: BurnEvent) => void;
 
   start(): void {
@@ -36,16 +38,17 @@ export class BuybackEngine {
       "buyback",
       `engine armed (min ${config.xero.buybackMinSol} SOL, ${config.xero.buybackProfitPct}% of profits)`,
     );
+    if (db.jobs.buyback) void this.tick(); // finish whatever a restart interrupted
   }
 
-  private async tick(): Promise<void> {
+  async tick(): Promise<void> {
     if (this.running) return;
-    if (!config.xero.mint) return;
-    if (db.treasury.pendingBuybackSol < config.xero.buybackMinSol) return;
-
     this.running = true;
     try {
-      await this.executeBuyback(db.treasury.pendingBuybackSol);
+      if (db.jobs.buyback) await this.resume();
+      else if (config.xero.mint && db.treasury.pendingBuybackSol >= config.xero.buybackMinSol) {
+        await this.executeBuyback(db.treasury.pendingBuybackSol);
+      }
     } catch (err) {
       log.error("buyback", "buyback failed", err);
     } finally {
@@ -53,90 +56,126 @@ export class BuybackEngine {
     }
   }
 
-  private async executeBuyback(sol: number): Promise<void> {
-    let buyTx: string | undefined;
-    let burnTx: string | undefined;
-    let xeroBought = 0;
+  private async executeBuyback(poolSol: number): Promise<void> {
+    // whole lamports only, so the pool and the tx agree exactly
+    const sol = lamportsToSol(lamports(poolSol));
+    if (sol <= 0) return;
 
-    if (config.paperTrading) {
-      const price = tracker.get(config.xero.mint)?.priceSol;
-      // if we have no live price for XERO yet, simulate a nominal fill
-      xeroBought = price && price > 0 ? sol / price : sol * 1_000_000;
-    } else {
-      const result = await executeTrade({
-        action: "buy",
-        mint: config.xero.mint,
-        amount: sol,
-        denominatedInSol: true,
-      });
-      if (!result.ok) {
-        log.error("buyback", `live buyback failed: ${result.error}`);
-        return;
-      }
-      buyTx = result.signature;
-      const price = tracker.get(config.xero.mint)?.priceSol;
-      xeroBought = price && price > 0 ? sol / price : 0;
-      const burned = await this.burnHeldXero();
-      if (burned) {
-        burnTx = burned.signature;
-        xeroBought = burned.amount; // exact on-chain amount beats the estimate
-      }
+    if (config.paperTrading) return this.paperBuyback(sol);
+
+    const keypair = getKeypair();
+    if (!keypair) {
+      if (!this.warnedNoKey) log.warn("buyback", "live mode but WALLET_SECRET_KEY not set — keeping the pool, no buyback");
+      this.warnedNoKey = true;
+      return;
     }
 
-    const event: BurnEvent = {
+    // commit: SOL leaves the pool and is on disk BEFORE anything is broadcast
+    const id = `bb-${Date.now()}-${shortId()}`;
+    db.treasury.pendingBuybackSol -= sol;
+    db.treasury.inFlightBuybackSol += sol;
+    db.jobs.buyback = { id, sol, startedAt: Date.now() };
+    db.commit("treasury", "jobs");
+
+    const ledger = new Ledger(BUYBACK_LEDGER);
+    let outcome: BuybackOutcome;
+    try {
+      outcome = await buybackAndBurn(getConnection(), {
+        wallet: keypair,
+        mint: new PublicKey(config.xero.mint),
+        sol,
+        slippagePct: config.execution.slippagePct,
+        priorityFeeSol: config.execution.priorityFeeSol,
+        pool: "auto",
+        ledger,
+        id,
+        log: (m) => log.info("buyback", m),
+      });
+    } catch (err) {
+      // nothing signed yet → nothing can land → refund; otherwise resume next tick
+      outcome = ledger.entries.has(id)
+        ? { state: "waiting", reason: (err as Error).message }
+        : { state: "refund", reason: `buy never sent: ${(err as Error).message}` };
+    }
+    this.settle(outcome);
+  }
+
+  private async resume(): Promise<void> {
+    const job = db.jobs.buyback!;
+    const ledger = new Ledger(BUYBACK_LEDGER);
+    const entry = ledger.entries.get(job.id) as BuybackJob | undefined;
+    if (!entry) return this.settle({ state: "refund", reason: "crashed before the buy was signed" });
+    const keypair = getKeypair();
+    if (!keypair) {
+      log.warn("buyback", `job ${job.id} unfinished but WALLET_SECRET_KEY is not set — leaving it for later`);
+      return;
+    }
+    const outcome = await resumeBuyback(getConnection(), {
+      wallet: keypair,
+      ledger,
+      job: entry,
+      log: (m) => log.info("buyback", m),
+    }).catch((err): BuybackOutcome => ({ state: "waiting", reason: (err as Error).message }));
+    this.settle(outcome);
+  }
+
+  private settle(outcome: BuybackOutcome): void {
+    const job = db.jobs.buyback;
+    if (!job) return;
+    if (outcome.state === "waiting") {
+      log.warn("buyback", `job ${job.id} waiting: ${outcome.reason}`);
+      return;
+    }
+    db.treasury.inFlightBuybackSol = Math.max(0, db.treasury.inFlightBuybackSol - job.sol);
+    db.jobs.buyback = undefined;
+    if (outcome.state === "refund") {
+      db.treasury.pendingBuybackSol += job.sol;
+      db.commit("treasury", "jobs");
+      log.warn("buyback", `job ${job.id}: ${outcome.reason} — ${job.sol} SOL returned to the buyback pool`);
+      return;
+    }
+    const bought = Number(toUi(outcome.boughtRaw, outcome.decimals));
+    const burned = Number(toUi(outcome.burnedRaw, outcome.decimals));
+    this.record({
+      id: job.id,
+      at: Date.now(),
+      solSpent: job.sol,
+      xeroBought: bought,
+      xeroBurned: burned,
+      boughtRaw: outcome.boughtRaw.toString(),
+      burnedRaw: outcome.burnedRaw.toString(),
+      buyTx: outcome.buySig,
+      burnTx: outcome.burnSig,
+      fundedBy: "trading-profit",
+      paper: false,
+    });
+  }
+
+  private paperBuyback(sol: number): void {
+    const price = tracker.get(config.xero.mint)?.priceSol;
+    // if we have no live price for XERO yet, simulate a nominal fill
+    const xeroBought = price && price > 0 ? sol / price : sol * 1_000_000;
+    db.treasury.pendingBuybackSol -= sol;
+    this.record({
       id: shortId(),
       at: Date.now(),
       solSpent: sol,
       xeroBought,
       xeroBurned: xeroBought,
-      buyTx,
-      burnTx,
       fundedBy: "trading-profit",
-      paper: config.paperTrading,
-    };
-    db.burns.push(event);
-    db.treasury.pendingBuybackSol -= sol;
-    db.treasury.totalBuybackSol += sol;
-    db.treasury.totalXeroBurned += event.xeroBurned;
-    db.markDirty("burns", "treasury");
-    log.info(
-      "buyback",
-      `🔥 bought back ${sol.toFixed(3)} SOL of $XERO (${xeroBought.toFixed(0)} tokens) -> burn`,
-    );
-    this.onBurn?.(event);
+      paper: true,
+    });
   }
 
-  /**
-   * Burn the operator wallet's entire $XERO balance via the SPL burn
-   * instruction. Returns undefined (and logs) when no wallet key is set —
-   * the buyback still records, burn happens manually.
-   */
-  private async burnHeldXero(): Promise<{ signature: string; amount: number } | undefined> {
-    const keypair = getKeypair();
-    if (!keypair) {
-      log.warn("buyback", "no WALLET_SECRET_KEY — bought tokens held, burn manually");
-      return undefined;
-    }
-    try {
-      const conn = getConnection();
-      const mint = new PublicKey(config.xero.mint);
-      const ata = getAssociatedTokenAddressSync(mint, keypair.publicKey);
-      const balance = await conn.getTokenAccountBalance(ata);
-      const raw = BigInt(balance.value.amount);
-      if (raw === 0n) {
-        log.warn("buyback", "wallet holds 0 XERO after buy — nothing to burn yet");
-        return undefined;
-      }
-      const tx = new Transaction().add(
-        createBurnInstruction(ata, mint, keypair.publicKey, raw),
-      );
-      const signature = await sendAndConfirmTransaction(conn, tx, [keypair]);
-      const amount = balance.value.uiAmount ?? 0;
-      log.info("buyback", `🔥 on-chain burn of ${amount} XERO: ${signature}`);
-      return { signature, amount };
-    } catch (err) {
-      log.error("buyback", "on-chain burn failed (tokens held in wallet)", err);
-      return undefined;
-    }
+  private record(event: BurnEvent): void {
+    db.burns.push(event);
+    db.treasury.totalBuybackSol += event.solSpent;
+    db.treasury.totalXeroBurned += event.xeroBurned;
+    db.commit("burns", "treasury", "jobs");
+    log.info(
+      "buyback",
+      `🔥 bought back ${event.solSpent.toFixed(3)} SOL of $XERO (${event.xeroBought.toFixed(0)} tokens) → burned ${event.xeroBurned.toFixed(0)}`,
+    );
+    this.onBurn?.(event);
   }
 }
